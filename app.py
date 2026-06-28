@@ -1,5 +1,23 @@
 import streamlit as st
 import pandas as pd
+import sys
+import contextlib
+
+class StreamlitCapture:
+    def __init__(self, st_placeholder):
+        self.st_placeholder = st_placeholder
+        self.logs = []
+    
+    def write(self, text):
+        if text.strip():
+            self.logs.append(text.strip())
+            # Keep only the last 15 lines so the UI doesn't lag
+            display_text = "\n".join(self.logs[-15:])
+            self.st_placeholder.code(display_text, language='text')
+            
+    def flush(self):
+        pass
+
 
 from pipeline import (
     build_preprocessor,
@@ -93,23 +111,17 @@ if not run_btn:
 # ── EXECUTION PIPELINE ────────────────────────────────────────────────────────
 # ==============================================================================
 
-# ── Stage 0: Original Dataset ─────────────────────────────────────────────────
 st.markdown("## 📂 Stage 0 — Original Dataset Analysis")
 
+st.markdown('<p class="section-label">Original Dataset Preview (Top 5 Rows)</p>', unsafe_allow_html=True)
 st.dataframe(df.head(), use_container_width=True)
+
+st.markdown('<p class="section-label">Original Dataset Statistics</p>', unsafe_allow_html=True)
+st.dataframe(df.describe(include="all"), use_container_width=True)
 st.caption(f"Original Shape: {df.shape[0]:,} rows · {df.shape[1]} columns")
 
-orig_numeric = [c for c in df.select_dtypes(include=["int64", "float64"]).columns if c != target_var]
-orig_categorical = [c for c in df.select_dtypes(include=["object", "category", "bool"]).columns if c != target_var]
-
-with st.expander("🔍 Initial Feature Schema Detected", expanded=True):
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(f'<p class="section-label">Numerical ({len(orig_numeric)})</p>', unsafe_allow_html=True)
-        st.write(orig_numeric if orig_numeric else "—")
-    with c2:
-        st.markdown(f'<p class="section-label">Categorical ({len(orig_categorical)})</p>', unsafe_allow_html=True)
-        st.write(orig_categorical if orig_categorical else "—")
+st.markdown('<p class="section-label">Missing Values</p>', unsafe_allow_html=True)
+st.dataframe(df.isnull().sum().to_frame(name="Missing Count").T, use_container_width=True)
 
 st.divider()
 
@@ -140,8 +152,14 @@ cols_to_remove = [target_var] + all_dropped
 X = df.drop(columns=cols_to_remove)
 y = df[target_var]
 
-st.markdown('<p class="section-label">Cleaned Dataset Preview</p>', unsafe_allow_html=True)
+st.markdown('<p class="section-label">Cleaned Dataset Preview (Top 5 Rows)</p>', unsafe_allow_html=True)
 st.dataframe(X.head(), use_container_width=True)
+
+st.markdown('<p class="section-label">Cleaned Dataset Statistics</p>', unsafe_allow_html=True)
+st.dataframe(X.describe(include="all"), use_container_width=True)
+
+st.markdown('<p class="section-label">Missing Values</p>', unsafe_allow_html=True)
+st.dataframe(X.isnull().sum().to_frame(name="Missing Count").T, use_container_width=True)
 
 st.divider()
 
@@ -186,11 +204,15 @@ st.divider()
 
 # ── Stage 3: Hyperparameter Tuning ────────────────────────────────────────────
 st.markdown(f"## ⚙️ Stage 3 — Hyperparameter Tuning ({best_model_name})")
+st.write("Running exhaustive hyperparameter search. This may take a few minutes...")
+
+log_placeholder = st.empty()
 
 with st.spinner(f"Running RandomizedSearchCV on {best_model_name} with {cv_folds}-fold CV…"):
-    final_accuracy, best_params, report, _ = run_tuning(
-        X_train, X_test, y_train, y_test, preprocessor, best_model_name, cv_folds
-    )
+    with contextlib.redirect_stdout(StreamlitCapture(log_placeholder)):
+        final_accuracy, best_params, report, _ = run_tuning(
+            X_train, X_test, y_train, y_test, preprocessor, best_model_name, cv_folds
+        )
 
 m1, m2, m3 = st.columns(3)
 m1.metric("Baseline Accuracy", f"{best_accuracy:.4f}")
@@ -202,13 +224,20 @@ st.divider()
 # ── Stage 4: The Solution ─────────────────────────────────────────────────────
 st.markdown("## 🏆 Stage 4 — The Solution")
 
-st.markdown(
-    f'<div class="winner-badge">We recommend deploying <strong>{best_model_name}</strong> for this dataset.</div><br>',
-    unsafe_allow_html=True,
-)
-
-st.markdown("### Optimal Hyperparameters")
-st.json(best_params)
+if final_accuracy <= best_accuracy:
+    st.markdown(
+        f'<div class="winner-badge">We recommend deploying <strong>{best_model_name}</strong> using its <strong>Default Parameters</strong>. Tuning did not improve accuracy.</div><br>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("### Optimal Hyperparameters")
+    st.info("No need for custom hyperparameters. Use the default configuration.")
+else:
+    st.markdown(
+        f'<div class="winner-badge">We recommend deploying <strong>{best_model_name}</strong> with the tuned parameters below.</div><br>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("### Optimal Hyperparameters")
+    st.json(best_params)
 
 st.markdown("### Classification Report")
 report_df = pd.DataFrame(report).transpose()

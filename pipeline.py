@@ -179,27 +179,17 @@ def run_tuning(X_train, X_test, y_train, y_test, preprocessor, best_model_name, 
         ("model", MODELS[best_model_name]),
     ])
 
-    # --- FAST TUNING: Downsample for grid search if dataset is large ---
-    # Cloud CPUs are slow. Tuning on 10k rows takes forever. 
-    # We find parameters on a 1.5k subset, then train the final model on the FULL dataset.
-    max_tune_samples = 1500
-    if len(X_train) > max_tune_samples:
-        from sklearn.utils import resample
-        try:
-            X_tune, y_tune = resample(X_train, y_train, n_samples=max_tune_samples, stratify=y_train, random_state=42)
-        except ValueError:
-            X_tune, y_tune = resample(X_train, y_train, n_samples=max_tune_samples, random_state=42)
-    else:
-        X_tune, y_tune = X_train, y_train
+    X_tune, y_tune = X_train, y_train
 
     grid_search = RandomizedSearchCV(
         winning_pipeline,
         PARAM_GRIDS[best_model_name],
         cv=cv_folds,
-        n_iter=5,
+        n_iter=10,
         random_state=42,
         n_jobs=1,
         scoring="accuracy",
+        verbose=3,
     )
     
     # 1. Search for best hyperparameters on the smaller subset
