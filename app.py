@@ -155,7 +155,7 @@ st.markdown(
 # ── Stage 2: Hyperparameter tuning ───────────────────────────────────────────
 st.markdown(f"## ⚙️ Stage 2 — Tuning {best_model_name}")
 
-with st.spinner(f"Running GridSearchCV on {best_model_name} with {cv_folds}-fold CV…"):
+with st.spinner(f"Running RandomizedSearchCV on {best_model_name} with {cv_folds}-fold CV…"):
     final_accuracy, best_params, report, _ = run_tuning(
         X_train, X_test, y_train, y_test, preprocessor, best_model_name, cv_folds
     )

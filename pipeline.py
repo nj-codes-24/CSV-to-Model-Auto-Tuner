@@ -1,6 +1,6 @@
 import pandas as pd
 import numpy as np
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
@@ -117,10 +117,12 @@ def run_tuning(X_train, X_test, y_train, y_test, preprocessor, best_model_name, 
         ("model", MODELS[best_model_name]),
     ])
 
-    grid_search = GridSearchCV(
+    grid_search = RandomizedSearchCV(
         winning_pipeline,
         PARAM_GRIDS[best_model_name],
         cv=cv_folds,
+        n_iter=5,
+        random_state=42,
         n_jobs=-1,
         scoring="accuracy",
     )
