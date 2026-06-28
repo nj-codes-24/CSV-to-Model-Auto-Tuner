@@ -15,6 +15,68 @@ from xgboost import XGBClassifier
 from sklearn.metrics import accuracy_score, classification_report
 
 
+def auto_drop_columns(df: pd.DataFrame, target_var: str) -> dict:
+    """
+    Automatically detects and returns a dictionary of useless/noisy columns to drop, grouped by reason:
+    1. All NaNs (Empty)
+    2. Single unique value (Zero variance)
+    3. High cardinality strings (IDs/Names/Hashes)
+    4. Multicollinear numeric columns (>0.95 correlation)
+    """
+    drop_reasons = {
+        "empty": [],
+        "zero_variance": [],
+        "high_cardinality": [],
+        "multicollinear": []
+    }
+    
+    for col in df.columns:
+        if col == target_var:
+            continue
+            
+        # 1. Empty Columns
+        if df[col].isna().all():
+            drop_reasons["empty"].append(col)
+            continue
+            
+        # 2. Zero Variance
+        if df[col].nunique(dropna=True) <= 1:
+            drop_reasons["zero_variance"].append(col)
+            continue
+            
+        # 3. High Cardinality (for categorical/string types)
+        num_unique = df[col].nunique()
+        if df[col].dtype == 'object' or df[col].dtype.name == 'category':
+            # Drop if more than 100 categories OR if it's more than 50% unique (like an ID)
+            if num_unique > 100 or num_unique > len(df) * 0.5:
+                drop_reasons["high_cardinality"].append(col)
+                continue
+                
+        # 4. Numeric IDs (like RowNumber, CustomerId)
+        if pd.api.types.is_numeric_dtype(df[col]):
+            col_lower = str(col).lower()
+            is_id_name = any(x in col_lower for x in ['id', 'row', 'index', 'uuid'])
+            # Drop if it is exactly 100% unique (an index/row number) 
+            # OR if it's named like an ID and has high uniqueness (> 50%)
+            if num_unique == len(df) or (is_id_name and num_unique > len(df) * 0.5):
+                drop_reasons["high_cardinality"].append(col)
+                continue
+
+    # 5. Multicollinearity (Highly correlated numeric features)
+    dropped_so_far = set(drop_reasons["empty"] + drop_reasons["zero_variance"] + drop_reasons["high_cardinality"])
+    remaining_num_cols = [c for c in df.select_dtypes(include=["int64", "float64"]).columns if c not in dropped_so_far and c != target_var]
+    
+    if len(remaining_num_cols) > 1:
+        corr_matrix = df[remaining_num_cols].corr().abs()
+        # Upper triangle of correlation matrix
+        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
+        # Find features with correlation greater than 0.95
+        to_drop = [column for column in upper.columns if any(upper[column] > 0.95)]
+        drop_reasons["multicollinear"] = to_drop
+        
+    return drop_reasons
+
+
 MODELS = {
     "Naive Bayes": GaussianNB(),
     "Decision Tree": DecisionTreeClassifier(random_state=42),
@@ -117,6 +179,19 @@ def run_tuning(X_train, X_test, y_train, y_test, preprocessor, best_model_name, 
         ("model", MODELS[best_model_name]),
     ])
 
+    # --- FAST TUNING: Downsample for grid search if dataset is large ---
+    # Cloud CPUs are slow. Tuning on 10k rows takes forever. 
+    # We find parameters on a 1.5k subset, then train the final model on the FULL dataset.
+    max_tune_samples = 1500
+    if len(X_train) > max_tune_samples:
+        from sklearn.utils import resample
+        try:
+            X_tune, y_tune = resample(X_train, y_train, n_samples=max_tune_samples, stratify=y_train, random_state=42)
+        except ValueError:
+            X_tune, y_tune = resample(X_train, y_train, n_samples=max_tune_samples, random_state=42)
+    else:
+        X_tune, y_tune = X_train, y_train
+
     grid_search = RandomizedSearchCV(
         winning_pipeline,
         PARAM_GRIDS[best_model_name],
@@ -126,9 +201,16 @@ def run_tuning(X_train, X_test, y_train, y_test, preprocessor, best_model_name, 
         n_jobs=1,
         scoring="accuracy",
     )
-    grid_search.fit(X_train, y_train)
+    
+    # 1. Search for best hyperparameters on the smaller subset
+    grid_search.fit(X_tune, y_tune)
 
+    # 2. Extract the winning architecture
     final_model = grid_search.best_estimator_
+    
+    # 3. Retrain the winning model on the FULL training dataset for maximum accuracy
+    final_model.fit(X_train, y_train)
+
     y_pred_final = final_model.predict(X_test)
     final_accuracy = accuracy_score(y_test, y_pred_final)
 

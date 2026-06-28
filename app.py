@@ -1,7 +1,12 @@
 import streamlit as st
 import pandas as pd
 
-from pipeline import build_preprocessor, run_baseline, run_tuning
+from pipeline import (
+    build_preprocessor,
+    run_baseline,
+    run_tuning,
+    auto_drop_columns
+)
 from sklearn.model_selection import train_test_split
 
 # ── Page config ──────────────────────────────────────────────────────────────
@@ -66,12 +71,7 @@ with st.sidebar:
         all_cols = df.columns.tolist()
 
         target_var = st.selectbox("Target variable (Y)", all_cols)
-        potential_drops = [c for c in all_cols if c != target_var]
-        columns_to_drop = st.multiselect(
-            "Drop columns (IDs, names, high-cardinality)",
-            options=potential_drops,
-        )
-
+        
         st.divider()
         st.header("2. Parameters")
         test_size = st.slider("Test split ratio", 0.10, 0.40, 0.30, 0.05)
@@ -85,38 +85,73 @@ if not uploaded_file:
     st.info("Upload a CSV file in the sidebar to get started.")
     st.stop()
 
-# ── Data preview ──────────────────────────────────────────────────────────────
-st.markdown('<p class="section-label">Dataset Preview</p>', unsafe_allow_html=True)
-st.dataframe(df.head(), use_container_width=True)
-st.caption(f"{df.shape[0]:,} rows · {df.shape[1]} columns")
-
 if not run_btn:
+    st.info("Configure your target variable and parameters in the sidebar, then click **Execute AutoML Engine** to begin the pipeline.")
     st.stop()
 
-# ── Execution ─────────────────────────────────────────────────────────────────
+# ==============================================================================
+# ── EXECUTION PIPELINE ────────────────────────────────────────────────────────
+# ==============================================================================
+
+# ── Stage 0: Original Dataset ─────────────────────────────────────────────────
+st.markdown("## 📂 Stage 0 — Original Dataset Analysis")
+
+st.dataframe(df.head(), use_container_width=True)
+st.caption(f"Original Shape: {df.shape[0]:,} rows · {df.shape[1]} columns")
+
+orig_numeric = [c for c in df.select_dtypes(include=["int64", "float64"]).columns if c != target_var]
+orig_categorical = [c for c in df.select_dtypes(include=["object", "category", "bool"]).columns if c != target_var]
+
+with st.expander("🔍 Initial Feature Schema Detected", expanded=True):
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(f'<p class="section-label">Numerical ({len(orig_numeric)})</p>', unsafe_allow_html=True)
+        st.write(orig_numeric if orig_numeric else "—")
+    with c2:
+        st.markdown(f'<p class="section-label">Categorical ({len(orig_categorical)})</p>', unsafe_allow_html=True)
+        st.write(orig_categorical if orig_categorical else "—")
+
 st.divider()
 
-X = df.drop(columns=[target_var] + columns_to_drop)
+# ── Stage 1: Data Cleaning (Auto-Cleaner) ─────────────────────────────────────
+st.markdown("## 🧹 Stage 1 — Data Cleaning")
+
+drop_reasons = auto_drop_columns(df, target_var)
+all_dropped = sum(drop_reasons.values(), [])
+
+if all_dropped:
+    with st.expander(f"Deleted {len(all_dropped)} noisy column(s)", expanded=True):
+        st.markdown("These columns provide zero predictive value or confuse models, so they were safely removed:")
+        if drop_reasons["empty"]:
+            st.markdown(f"- **Empty (All NaNs):** `{', '.join(drop_reasons['empty'])}`")
+        if drop_reasons["zero_variance"]:
+            st.markdown(f"- **Zero Variance (Constant values):** `{', '.join(drop_reasons['zero_variance'])}`")
+        if drop_reasons["high_cardinality"]:
+            st.markdown(f"- **High Cardinality (Likely IDs/Names):** `{', '.join(drop_reasons['high_cardinality'])}`")
+        if drop_reasons["multicollinear"]:
+            st.markdown(f"- **Multicollinearity (Duplicates/Highly correlated):** `{', '.join(drop_reasons['multicollinear'])}`")
+else:
+    st.success("No noisy columns detected! All features look mathematically healthy.")
+
+columns_kept = [c for c in df.columns if c not in all_dropped and c != target_var]
+st.success(f"**Final columns to be used for training ({len(columns_kept)}):** `{', '.join(columns_kept)}`")
+
+cols_to_remove = [target_var] + all_dropped
+X = df.drop(columns=cols_to_remove)
 y = df[target_var]
+
+st.markdown('<p class="section-label">Cleaned Dataset Preview</p>', unsafe_allow_html=True)
+st.dataframe(X.head(), use_container_width=True)
+
+st.divider()
+
+# ── Stage 2: Baseline Model Comparison ────────────────────────────────────────
+st.markdown("## 📊 Stage 2 — Baseline Model Comparison")
 
 X_train, X_test, y_train, y_test = train_test_split(
     X, y, test_size=test_size, random_state=42
 )
-
-preprocessor, numeric_cols, categorical_cols = build_preprocessor(X)
-
-# Feature schema
-with st.expander("🔍 Feature Schema Detected", expanded=True):
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown(f'<p class="section-label">Numerical ({len(numeric_cols)})</p>', unsafe_allow_html=True)
-        st.write(numeric_cols if numeric_cols else "—")
-    with c2:
-        st.markdown(f'<p class="section-label">Categorical ({len(categorical_cols)})</p>', unsafe_allow_html=True)
-        st.write(categorical_cols if categorical_cols else "—")
-
-# ── Stage 1: Baseline ─────────────────────────────────────────────────────────
-st.markdown("## 📊 Stage 1 — Baseline Model Comparison")
+preprocessor, _, _ = build_preprocessor(X)
 
 progress_bar = st.progress(0, text="Starting baseline evaluation…")
 status_text = st.empty()
@@ -147,13 +182,10 @@ with col_table:
 with col_chart:
     st.bar_chart(data=res_df, x="Algorithm", y="Accuracy", use_container_width=True)
 
-st.markdown(
-    f'<div class="winner-badge">🏆 Baseline winner: <strong>{best_model_name}</strong> — {best_accuracy:.4f} accuracy</div>',
-    unsafe_allow_html=True,
-)
+st.divider()
 
-# ── Stage 2: Hyperparameter tuning ───────────────────────────────────────────
-st.markdown(f"## ⚙️ Stage 2 — Tuning {best_model_name}")
+# ── Stage 3: Hyperparameter Tuning ────────────────────────────────────────────
+st.markdown(f"## ⚙️ Stage 3 — Hyperparameter Tuning ({best_model_name})")
 
 with st.spinner(f"Running RandomizedSearchCV on {best_model_name} with {cv_folds}-fold CV…"):
     final_accuracy, best_params, report, _ = run_tuning(
@@ -165,10 +197,19 @@ m1.metric("Baseline Accuracy", f"{best_accuracy:.4f}")
 m2.metric("Tuned Accuracy", f"{final_accuracy:.4f}", delta=f"{final_accuracy - best_accuracy:+.4f}")
 m3.metric("CV Folds Used", cv_folds)
 
-st.markdown("**Optimal hyperparameters found:**")
+st.divider()
+
+# ── Stage 4: The Solution ─────────────────────────────────────────────────────
+st.markdown("## 🏆 Stage 4 — The Solution")
+
+st.markdown(
+    f'<div class="winner-badge">We recommend deploying <strong>{best_model_name}</strong> for this dataset.</div><br>',
+    unsafe_allow_html=True,
+)
+
+st.markdown("### Optimal Hyperparameters")
 st.json(best_params)
 
-# ── Classification report ─────────────────────────────────────────────────────
-st.markdown("### 📋 Classification Report")
+st.markdown("### Classification Report")
 report_df = pd.DataFrame(report).transpose()
 st.dataframe(report_df.style.format(precision=4), use_container_width=True)
