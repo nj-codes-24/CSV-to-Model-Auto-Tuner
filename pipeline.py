@@ -89,24 +89,32 @@ def auto_drop_columns(df: pd.DataFrame, target_var: str) -> dict:
 # Wrapped in CalibratedClassifierCV so predict_proba works if needed downstream.
 # n_jobs=-1 on tree ensembles uses all CPU cores without blocking the GIL for long.
 MODELS = {
+    "Logistic Regression": LogisticRegression(max_iter=1000, n_jobs=-1),
     "Decision Tree":      DecisionTreeClassifier(random_state=42),
+    "LinearSVC":          CalibratedClassifierCV(LinearSVC(max_iter=2000, random_state=42)),
+    "KNN":                KNeighborsClassifier(n_jobs=-1),
     "Random Forest":      RandomForestClassifier(n_jobs=-1, random_state=42),
     "AdaBoost":           AdaBoostClassifier(random_state=42),
     "Gradient Boosting":  GradientBoostingClassifier(random_state=42),
     "XGBoost":            XGBClassifier(random_state=42, eval_metric="logloss",
                                         verbosity=0, n_jobs=-1, tree_method="hist"),
-    "Logistic Regression": LogisticRegression(max_iter=1000, n_jobs=-1),
-    "LinearSVC":          CalibratedClassifierCV(LinearSVC(max_iter=2000, random_state=42)),
-    "KNN":                KNeighborsClassifier(n_jobs=-1),
 }
 
 # Models that still don't scale to huge N — they will be trained on a subsample
 _SLOW_MODELS = {"KNN", "LinearSVC"}
 
 PARAM_GRIDS = {
+    "Logistic Regression": {"model__C": [0.1, 1, 10]},
     "Decision Tree":      {
         "model__max_depth": [None, 5, 10, 15],
         "model__min_samples_split": [2, 5, 10],
+    },
+    "LinearSVC":          {
+        "model__estimator__C": [0.1, 1, 10],
+    },
+    "KNN":                {
+        "model__n_neighbors": [3, 5, 7],
+        "model__weights": ["uniform", "distance"],
     },
     "Random Forest":      {
         "model__n_estimators": [50, 100, 200],
@@ -125,14 +133,6 @@ PARAM_GRIDS = {
         "model__n_estimators": [50, 100, 200],
         "model__learning_rate": [0.01, 0.1, 0.2],
         "model__max_depth": [3, 5, 7],
-    },
-    "Logistic Regression": {"model__C": [0.1, 1, 10]},
-    "LinearSVC":          {
-        "model__estimator__C": [0.1, 1, 10],
-    },
-    "KNN":                {
-        "model__n_neighbors": [3, 5, 7],
-        "model__weights": ["uniform", "distance"],
     },
 }
 # ────────────────────────────────────────────────────────────────────────────────
