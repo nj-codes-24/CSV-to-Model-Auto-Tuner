@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+from datetime import datetime
 from sklearn.model_selection import train_test_split, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
@@ -195,15 +196,22 @@ def run_baseline(X_train, X_test, y_train, y_test, preprocessor, progress_callba
         if progress_callback:
             progress_callback(idx, len(MODELS), name, status="start")
 
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚙️ Initializing {name}...")
+
         X_tr, y_tr = _maybe_subsample(X_train, y_train, name)
+        if len(X_tr) < len(X_train):
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Subsampling dataset to {len(X_tr):,} rows for performance...")
 
         pipeline = Pipeline(steps=[
             ("preprocessor", preprocessor),
             ("model", model),
         ])
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 Fitting model...")
         pipeline.fit(X_tr, y_tr)
+        
         accuracy = accuracy_score(y_test, pipeline.predict(X_test))
         results[name] = accuracy
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {name} completed with accuracy: {accuracy:.4f}\n")
 
         if accuracy > best_accuracy:
             best_accuracy = accuracy

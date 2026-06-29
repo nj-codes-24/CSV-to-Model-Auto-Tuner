@@ -181,9 +181,11 @@ def on_progress(idx, total, name, status="end"):
         progress_bar.progress(idx / total, text=f"✅ Trained {name} ({idx}/{total})")
         status_text.caption(f"Last completed: **{name}**")
 
-results, best_model_name, best_accuracy = run_baseline(
-    X_train, X_test, y_train, y_test, preprocessor, progress_callback=on_progress
-)
+baseline_log_placeholder = st.empty()
+with contextlib.redirect_stdout(StreamlitCapture(baseline_log_placeholder)):
+    results, best_model_name, best_accuracy = run_baseline(
+        X_train, X_test, y_train, y_test, preprocessor, progress_callback=on_progress
+    )
 
 progress_bar.progress(1.0, text="Baseline evaluation complete.")
 status_text.empty()
