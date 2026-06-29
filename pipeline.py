@@ -192,6 +192,9 @@ def run_baseline(X_train, X_test, y_train, y_test, preprocessor, progress_callba
     best_model_name = ""
 
     for idx, (name, model) in enumerate(MODELS.items()):
+        if progress_callback:
+            progress_callback(idx, len(MODELS), name, status="start")
+
         X_tr, y_tr = _maybe_subsample(X_train, y_train, name)
 
         pipeline = Pipeline(steps=[
@@ -207,7 +210,7 @@ def run_baseline(X_train, X_test, y_train, y_test, preprocessor, progress_callba
             best_model_name = name
 
         if progress_callback:
-            progress_callback(idx + 1, len(MODELS), name)
+            progress_callback(idx + 1, len(MODELS), name, status="end")
 
     return results, best_model_name, best_accuracy
 

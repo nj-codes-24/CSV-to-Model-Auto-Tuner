@@ -174,9 +174,12 @@ preprocessor, _, _ = build_preprocessor(X)
 progress_bar = st.progress(0, text="Starting baseline evaluation…")
 status_text = st.empty()
 
-def on_progress(idx, total, name):
-    progress_bar.progress(idx / total, text=f"Trained {name} ({idx}/{total})")
-    status_text.caption(f"Last completed: **{name}**")
+def on_progress(idx, total, name, status="end"):
+    if status == "start":
+        progress_bar.progress(idx / total, text=f"⚙️ Training {name} ({idx + 1}/{total})...")
+    else:
+        progress_bar.progress(idx / total, text=f"✅ Trained {name} ({idx}/{total})")
+        status_text.caption(f"Last completed: **{name}**")
 
 results, best_model_name, best_accuracy = run_baseline(
     X_train, X_test, y_train, y_test, preprocessor, progress_callback=on_progress
