@@ -140,6 +140,7 @@ def basic_trim(df: pd.DataFrame, target_col: str,
         "duplicates_removed": 0,
         "high_missing_cols": [],
         "near_constant_cols": [],
+        "id_cols_removed": [],
         "leakage_cols_removed": [],
     }
 
@@ -166,6 +167,33 @@ def basic_trim(df: pd.DataFrame, target_col: str,
             near_const.append(c)
     report["near_constant_cols"] = near_const
     df = df.drop(columns=near_const)
+
+    # 3.5 Drop ID-like columns (high cardinality identifiers)
+    id_cols = []
+    for c in df.columns:
+        if c == target_col:
+            continue
+        n_unique = df[c].nunique()
+        total_rows = len(df)
+        if total_rows == 0:
+            continue
+            
+        is_obj = df[c].dtype == "object" or pd.api.types.is_string_dtype(df[c])
+        is_int = pd.api.types.is_integer_dtype(df[c])
+        
+        # Rule 1: High-cardinality text (like Name, Ticket, Hash) -> > 70% unique
+        if is_obj and (n_unique / total_rows) > 0.70:
+            id_cols.append(c)
+        # Rule 2: 100% unique integers (like PassengerId, RowNum)
+        elif is_int and n_unique == total_rows:
+            id_cols.append(c)
+        # Rule 3: Has 'id' in name and high cardinality (> 50%)
+        elif "id" in str(c).lower() and (n_unique / total_rows) > 0.50:
+            if c not in id_cols:
+                id_cols.append(c)
+                
+    report["id_cols_removed"] = id_cols
+    df = df.drop(columns=id_cols)
 
     # 4. Drop user-specified leakage columns
     if leakage_cols:

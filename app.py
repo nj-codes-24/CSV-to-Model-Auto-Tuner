@@ -231,6 +231,7 @@ if "app_done" not in st.session_state:
     if trim["duplicates_removed"]: sublog(f"Removed {trim['duplicates_removed']} duplicate rows")
     if trim["high_missing_cols"]: sublog(f"Dropped {len(trim['high_missing_cols'])} cols (>50% missing): `{', '.join(trim['high_missing_cols'])}`")
     if trim["near_constant_cols"]: sublog(f"Dropped {len(trim['near_constant_cols'])} near-constant cols: `{', '.join(trim['near_constant_cols'])}`")
+    if trim["id_cols_removed"]: sublog(f"Dropped {len(trim['id_cols_removed'])} ID-like cols: `{', '.join(trim['id_cols_removed'])}`")
     if trim["leakage_cols_removed"]: sublog(f"Removed {len(trim['leakage_cols_removed'])} leakage cols: `{', '.join(trim['leakage_cols_removed'])}`")
     
     # 2. Task detection
