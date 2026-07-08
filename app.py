@@ -192,6 +192,8 @@ col_back, _ = st.columns([1, 8])
 with col_back:
     if st.button("⬅️ Back", use_container_width=True):
         st.session_state.app_phase = "setup"
+        if "app_done" in st.session_state:
+            del st.session_state["app_done"]
         st.rerun()
 
 st.title("Automated Pipeline Results")
@@ -204,30 +206,12 @@ cv_folds   = st.session_state.app_cv
 top_n      = st.session_state.app_topn
 leakage_cols = st.session_state.app_leakage
 
-
-# Set up UI slots for progressive rendering
-st.header("Stage 1: EDA")
-eda_log_slot = st.empty()
-
-st.header("Stage 2: Model Selection")
-mdl_prog_slot = st.empty()
-mdl_log_slot = st.empty()
-mdl_res_slot = st.empty()
-
-st.header("Stage 3: Hyperparameter Tuning")
-tune_prog_slot = st.empty()
-tune_log_slot = st.empty()
-tune_res_slot = st.empty()
-
-st.header("Final Conclusion")
-final_badge_slot = st.empty()
-final_metrics_slot = st.empty()
-st.markdown("<br>", unsafe_allow_html=True)
-final_downloads_slot = st.empty()
-
-
 # ── RUN PIPELINE (First Pass) ──
 if "app_done" not in st.session_state:
+    
+    # ── Stage 1: EDA ──
+    st.header("Stage 1: EDA")
+    eda_log_slot = st.empty()
     
     eda_log = ""
     def log(msg):
@@ -239,7 +223,6 @@ if "app_done" not in st.session_state:
         eda_log += f"  - {msg}\n"
         eda_log_slot.markdown(eda_log)
 
-    # ── Stage 1: EDA ──
     log(f"**Dataset loaded** — {df.shape[0]:,} rows × {df.shape[1]} columns")
     
     # 1. Cleaning
@@ -307,7 +290,12 @@ if "app_done" not in st.session_state:
 
     
     # ── Stage 2: Model Selection ──
+    st.header("Stage 2: Model Selection")
+    
+    mdl_prog_slot = st.empty()
+    mdl_log_slot = st.empty()
     mdl_prog = mdl_prog_slot.progress(0, text="Training models...")
+    
     def _mdl_prog(idx, total, name, status="end"):
         if status == "start":
             mdl_prog.progress(idx / total, text=f"⚙️ Training {name} ({idx+1}/{total})...")
@@ -336,6 +324,10 @@ if "app_done" not in st.session_state:
 
     
     # ── Stage 3: Tuning ──
+    st.header("Stage 3: Hyperparameter Tuning")
+    
+    tune_prog_slot = st.empty()
+    tune_log_slot = st.empty()
     tune_prog = tune_prog_slot.progress(0, text=f"Hyperparameter tuning {best_model}...")
     
     if task_type == "classification":
@@ -380,13 +372,18 @@ if "app_done" not in st.session_state:
     })
 
 
-# ── RENDER STORED UI (Happens instantly when session_state exists) ──
+# ── RENDER FINAL UI RESULTS ──
+# If app_done is True, this block renders the final charts and metrics.
+# If app_done was just set in the if-block above, it renders the results seamlessly.
 
-# Stage 1 UI
-eda_log_slot.markdown(st.session_state.app_eda_log)
-
-# Stage 2 UI
-with mdl_res_slot.container():
+if "app_done" in st.session_state:
+    # (If we didn't just run the pipeline, render the headers that were skipped)
+    if "eda_log_slot" not in locals():
+        st.header("Stage 1: EDA")
+        st.markdown(st.session_state.app_eda_log)
+        st.header("Stage 2: Model Selection")
+        
+    # Render Stage 2 Results
     res_df = (
         pd.DataFrame(st.session_state.app_mdl_results).T
         .reset_index().rename(columns={"index": "Algorithm"})
@@ -401,9 +398,10 @@ with mdl_res_slot.container():
     with col_cht:
         st.bar_chart(data=res_df, x="Algorithm", y=st.session_state.app_sort_col)
 
-
-# Stage 3 UI
-with tune_res_slot.container():
+    # Render Stage 3 Results
+    if "tune_prog_slot" not in locals():
+        st.header("Stage 3: Hyperparameter Tuning")
+        
     improved = st.session_state.app_improved
     best_params = st.session_state.app_best_params
     best_model = st.session_state.app_best_model
@@ -417,24 +415,23 @@ with tune_res_slot.container():
         st.info(f"Tuning did not yield a better score. Default hyperparameters for **{best_model}** are optimal.")
         st.markdown(f"**Best {metric_name}:** {st.session_state.app_best_score:.4f}")
 
+    # Render Final Conclusion
+    st.header("Final Conclusion")
+    delta = st.session_state.app_tuned_score - st.session_state.app_best_score
+    if improved and best_params:
+        detail = f"Tuning improved {metric_name} by <strong>+{delta:.4f}</strong>. Use the optimised parameters above."
+    else:
+        detail = "Default parameters are optimal. No tuning improvement detected."
 
-# Final Conclusion UI
-delta = st.session_state.app_tuned_score - st.session_state.app_best_score
-if improved and best_params:
-    detail = f"Tuning improved {metric_name} by <strong>+{delta:.4f}</strong>. Use the optimised parameters above."
-else:
-    detail = "Default parameters are optimal. No tuning improvement detected."
+    st.markdown(f"""
+    <div class="vb">
+        <div class="vb-trophy">🏆</div>
+        <div class="vb-label">Winning Model</div>
+        <div class="vb-model">{best_model}</div>
+        <div class="vb-detail">{detail}</div>
+    </div>
+    """, unsafe_allow_html=True)
 
-final_badge_slot.markdown(f"""
-<div class="vb">
-    <div class="vb-trophy">🏆</div>
-    <div class="vb-label">Winning Model</div>
-    <div class="vb-model">{best_model}</div>
-    <div class="vb-detail">{detail}</div>
-</div>
-""", unsafe_allow_html=True)
-
-with final_metrics_slot.container():
     final_metrics = st.session_state.app_final_metrics
     cols = st.columns(len(final_metrics))
     for col, (k, v) in zip(cols, final_metrics.items()):
@@ -443,8 +440,8 @@ with final_metrics_slot.container():
     if st.session_state.app_target_log:
         st.warning("Note: Metrics are in **log-space** (target was log-transformed). Apply `np.expm1()` to predictions for real-world values.")
 
-
-with final_downloads_slot.container():
+    st.markdown("<br>", unsafe_allow_html=True)
+    
     dl1, dl2 = st.columns(2)
     with dl1:
         cleaned = pd.concat([st.session_state.app_X_train, st.session_state.app_X_test], axis=0)
