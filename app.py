@@ -231,11 +231,11 @@ if "app_done" not in st.session_state:
     
     eda_log = ""
     def log(msg):
-        nonlocal eda_log
+        global eda_log
         eda_log += f"- {msg}\n"
         eda_log_slot.markdown(eda_log)
     def sublog(msg):
-        nonlocal eda_log
+        global eda_log
         eda_log += f"  - {msg}\n"
         eda_log_slot.markdown(eda_log)
 
