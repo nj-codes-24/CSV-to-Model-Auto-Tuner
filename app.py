@@ -115,7 +115,7 @@ class StreamlitCapture:
     def write(self, text):
         if text.strip():
             self.logs.append(text.strip())
-            self.ph.code("\n".join(self.logs[-6:]), language="text")
+            self.ph.code("\n".join(self.logs[-8:]), language="text")
     def flush(self):
         pass
 
@@ -204,16 +204,42 @@ cv_folds   = st.session_state.app_cv
 top_n      = st.session_state.app_topn
 leakage_cols = st.session_state.app_leakage
 
-# ── Only run the heavy computation once per launch ──
+
+# Set up UI slots for progressive rendering
+st.header("Stage 1: EDA")
+eda_log_slot = st.empty()
+
+st.header("Stage 2: Model Selection")
+mdl_prog_slot = st.empty()
+mdl_log_slot = st.empty()
+mdl_res_slot = st.empty()
+
+st.header("Stage 3: Hyperparameter Tuning")
+tune_prog_slot = st.empty()
+tune_log_slot = st.empty()
+tune_res_slot = st.empty()
+
+st.header("Final Conclusion")
+final_badge_slot = st.empty()
+final_metrics_slot = st.empty()
+st.markdown("<br>", unsafe_allow_html=True)
+final_downloads_slot = st.empty()
+
+
+# ── RUN PIPELINE (First Pass) ──
 if "app_done" not in st.session_state:
     
-    eda_log = []
-    def log(msg): eda_log.append(f"- {msg}")
-    def sublog(msg): eda_log.append(f"  - {msg}")
+    eda_log = ""
+    def log(msg):
+        nonlocal eda_log
+        eda_log += f"- {msg}\n"
+        eda_log_slot.markdown(eda_log)
+    def sublog(msg):
+        nonlocal eda_log
+        eda_log += f"  - {msg}\n"
+        eda_log_slot.markdown(eda_log)
 
-    # Stage 1 execution 
-    prog = st.progress(0.0, text="Stage 1: Running EDA...")
-    
+    # ── Stage 1: EDA ──
     log(f"**Dataset loaded** — {df.shape[0]:,} rows × {df.shape[1]} columns")
     
     # 1. Cleaning
@@ -242,7 +268,7 @@ if "app_done" not in st.session_state:
     
     # 4. Imputation
     X_train, X_test, imp = smart_impute(X_train, X_test)
-    log("**Imputation**")
+    log("**Imputation** (train-only stats)")
     if imp["numeric_median"]: sublog(f"Median-filled: {len(imp['numeric_median'])} cols")
     if imp["numeric_mean"]: sublog(f"Mean-filled: {len(imp['numeric_mean'])} cols")
     if imp["categorical_imputed"]: sublog(f"Categorical filled: {len(imp['categorical_imputed'])} cols")
@@ -252,12 +278,14 @@ if "app_done" not in st.session_state:
     log(f"**Feature Selection** ({fs['method'] or 'Correlation'})")
     if fs["multicollinear_dropped"]: sublog(f"Dropped {len(fs['multicollinear_dropped'])} multicollinear cols")
     if fs["weak_categorical_dropped"]: sublog(f"Dropped {len(fs['weak_categorical_dropped'])} weak categoricals")
+    if not fs["multicollinear_dropped"] and not fs["weak_categorical_dropped"]: sublog("✅ All features passed significance tests")
     
     # 6. Outliers & Skewness
     log_tgt = metric_info.get("log_transform_target", False)
     X_train, X_test, y_train, y_test, out = handle_outliers_and_skew(X_train, X_test, y_train, y_test, task_type, log_transform_target=log_tgt)
     log("**Outlier & Skewness Treatment**")
     sublog(f"IQR-capped {out['capped_features']} features")
+    if out["massive_flags_created"]: sublog(f"Created {len(out['massive_flags_created'])} outlier flags")
     if out["log_transformed_features"]: sublog(f"Log-transformed {len(out['log_transformed_features'])} skewed features")
     if out["target_log_transformed"]: sublog("Target was log-transformed (skewed)")
     
@@ -277,47 +305,62 @@ if "app_done" not in st.session_state:
     top_features = X_train.columns.tolist()
     log(f"**RF Importance Scan** — Selected top {len(top_features)} features: `{', '.join(top_features)}`")
 
-    prog.progress(0.4, text="Stage 2: Model Selection...")
     
-    # Stage 2 Execution
+    # ── Stage 2: Model Selection ──
+    mdl_prog = mdl_prog_slot.progress(0, text="Training models...")
+    def _mdl_prog(idx, total, name, status="end"):
+        if status == "start":
+            mdl_prog.progress(idx / total, text=f"⚙️ Training {name} ({idx+1}/{total})...")
+        else:
+            mdl_prog.progress(idx / total, text=f"✅ {name} trained ({idx}/{total})")
+
     if task_type == "classification":
         scoring = metric_info["primary_metric"]
         use_cw  = metric_info.get("use_class_weight", False)
-        mdl_results, best_model, best_score = run_baseline_classification(
-            X_train, X_test, y_train, y_test, scoring_metric=scoring, use_class_weight=use_cw
-        )
+        with contextlib.redirect_stdout(StreamlitCapture(mdl_log_slot)):
+            mdl_results, best_model, best_score = run_baseline_classification(
+                X_train, X_test, y_train, y_test, scoring_metric=scoring, use_class_weight=use_cw, progress_callback=_mdl_prog
+            )
         sort_col = "Accuracy" if scoring == "accuracy" else "F1 (weighted)"
     else:
         scoring = "r2"
-        mdl_results, best_model, best_score = run_baseline_regression(
-            X_train, X_test, y_train, y_test
-        )
+        with contextlib.redirect_stdout(StreamlitCapture(mdl_log_slot)):
+            mdl_results, best_model, best_score = run_baseline_regression(
+                X_train, X_test, y_train, y_test, progress_callback=_mdl_prog
+            )
         sort_col = "R²"
 
-    prog.progress(0.7, text=f"Stage 3: Tuning {best_model}...")
+    # Models finished. Clear progress and logs to make room for final UI
+    mdl_prog_slot.empty()
+    mdl_log_slot.empty()
 
-    # Stage 3 Execution
+    
+    # ── Stage 3: Tuning ──
+    tune_prog = tune_prog_slot.progress(0, text=f"Hyperparameter tuning {best_model}...")
+    
     if task_type == "classification":
-        final_acc, final_f1, best_params, cls_report, final_model = run_tuning_classification(
-            X_train, X_test, y_train, y_test, best_model, cv_folds, scoring_metric=scoring, use_class_weight=use_cw
-        )
+        with contextlib.redirect_stdout(StreamlitCapture(tune_log_slot)):
+            final_acc, final_f1, best_params, cls_report, final_model = run_tuning_classification(
+                X_train, X_test, y_train, y_test, best_model, cv_folds, scoring_metric=scoring, use_class_weight=use_cw
+            )
         tuned_score = final_acc if scoring == "accuracy" else final_f1
         final_metrics = {"Accuracy": final_acc, "F1 (weighted)": final_f1}
     else:
-        final_r2, final_mae, final_rmse, best_params, final_model = run_tuning_regression(
-            X_train, X_test, y_train, y_test, best_model, cv_folds
-        )
+        with contextlib.redirect_stdout(StreamlitCapture(tune_log_slot)):
+            final_r2, final_mae, final_rmse, best_params, final_model = run_tuning_regression(
+                X_train, X_test, y_train, y_test, best_model, cv_folds
+            )
         tuned_score = final_r2
         final_metrics = {"R²": final_r2, "MAE": final_mae, "RMSE": final_rmse}
-        cls_report = None
         
     improved = tuned_score > best_score
-    prog.progress(1.0, text="Pipeline Complete!")
-    prog.empty()
+    
+    tune_prog_slot.empty()
+    tune_log_slot.empty()
 
-    # Save to session state
+    # Save everything to session state
     st.session_state.update({
-        "app_eda_log":       "\n".join(eda_log),
+        "app_eda_log":       eda_log,
         "app_task_type":     task_type,
         "app_metric_info":   metric_info,
         "app_mdl_results":   mdl_results,
@@ -336,49 +379,53 @@ if "app_done" not in st.session_state:
         "app_done":          True,
     })
 
-# ── RENDER RESULTS FROM SESSION STATE ──
 
-st.header("Stage 1: EDA")
-st.markdown(st.session_state.app_eda_log)
+# ── RENDER STORED UI (Happens instantly when session_state exists) ──
 
-st.header("Stage 2: Model Selection")
-res_df = (
-    pd.DataFrame(st.session_state.app_mdl_results).T
-    .reset_index().rename(columns={"index": "Algorithm"})
-    .sort_values(st.session_state.app_sort_col, ascending=False).reset_index(drop=True)
-)
-col_tbl, col_cht = st.columns([1, 1])
-with col_tbl:
-    st.dataframe(
-        res_df.style.highlight_max(axis=0, subset=[st.session_state.app_sort_col], color="#1e3a5f"),
-        use_container_width=True,
+# Stage 1 UI
+eda_log_slot.markdown(st.session_state.app_eda_log)
+
+# Stage 2 UI
+with mdl_res_slot.container():
+    res_df = (
+        pd.DataFrame(st.session_state.app_mdl_results).T
+        .reset_index().rename(columns={"index": "Algorithm"})
+        .sort_values(st.session_state.app_sort_col, ascending=False).reset_index(drop=True)
     )
-with col_cht:
-    st.bar_chart(data=res_df, x="Algorithm", y=st.session_state.app_sort_col)
+    col_tbl, col_cht = st.columns([1, 1])
+    with col_tbl:
+        st.dataframe(
+            res_df.style.highlight_max(axis=0, subset=[st.session_state.app_sort_col], color="#1e3a5f"),
+            use_container_width=True,
+        )
+    with col_cht:
+        st.bar_chart(data=res_df, x="Algorithm", y=st.session_state.app_sort_col)
 
-st.header("Stage 3: Hyperparameter Tuning")
-improved = st.session_state.app_improved
-best_params = st.session_state.app_best_params
-best_model = st.session_state.app_best_model
-metric_name = st.session_state.app_metric_info["metric_display_name"]
 
-if improved and best_params:
-    st.success(f"Tuning improved the model! **{best_model}** {metric_name} increased from **{st.session_state.app_best_score:.4f}** to **{st.session_state.app_tuned_score:.4f}**.")
-    st.markdown("### Optimal Hyperparameters:")
-    st.json(best_params)
-else:
-    st.info(f"Tuning did not yield a better score. Default hyperparameters for **{best_model}** are optimal.")
-    st.markdown(f"**Best {metric_name}:** {st.session_state.app_best_score:.4f}")
+# Stage 3 UI
+with tune_res_slot.container():
+    improved = st.session_state.app_improved
+    best_params = st.session_state.app_best_params
+    best_model = st.session_state.app_best_model
+    metric_name = st.session_state.app_metric_info["metric_display_name"]
 
-st.header("Final Conclusion")
+    if improved and best_params:
+        st.success(f"Tuning improved the model! **{best_model}** {metric_name} increased from **{st.session_state.app_best_score:.4f}** to **{st.session_state.app_tuned_score:.4f}**.")
+        st.markdown("### Optimal Hyperparameters:")
+        st.json(best_params)
+    else:
+        st.info(f"Tuning did not yield a better score. Default hyperparameters for **{best_model}** are optimal.")
+        st.markdown(f"**Best {metric_name}:** {st.session_state.app_best_score:.4f}")
 
+
+# Final Conclusion UI
 delta = st.session_state.app_tuned_score - st.session_state.app_best_score
 if improved and best_params:
     detail = f"Tuning improved {metric_name} by <strong>+{delta:.4f}</strong>. Use the optimised parameters above."
 else:
     detail = "Default parameters are optimal. No tuning improvement detected."
 
-st.markdown(f"""
+final_badge_slot.markdown(f"""
 <div class="vb">
     <div class="vb-trophy">🏆</div>
     <div class="vb-label">Winning Model</div>
@@ -387,39 +434,39 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# Metrics
-final_metrics = st.session_state.app_final_metrics
-cols = st.columns(len(final_metrics))
-for col, (k, v) in zip(cols, final_metrics.items()):
-    col.metric(k, f"{v:.4f}")
-    
-if st.session_state.app_target_log:
-    st.warning("Note: Metrics are in **log-space** (target was log-transformed). Apply `np.expm1()` to predictions for real-world values.")
+with final_metrics_slot.container():
+    final_metrics = st.session_state.app_final_metrics
+    cols = st.columns(len(final_metrics))
+    for col, (k, v) in zip(cols, final_metrics.items()):
+        col.metric(k, f"{v:.4f}")
+        
+    if st.session_state.app_target_log:
+        st.warning("Note: Metrics are in **log-space** (target was log-transformed). Apply `np.expm1()` to predictions for real-world values.")
 
-st.markdown("<br>", unsafe_allow_html=True)
-dl1, dl2 = st.columns(2)
 
-with dl1:
-    cleaned = pd.concat([st.session_state.app_X_train, st.session_state.app_X_test], axis=0)
-    csv_buf = io.BytesIO()
-    cleaned.to_csv(csv_buf, index=False)
-    st.download_button(
-        "⬇️  Download Cleaned Dataset (CSV)",
-        data=csv_buf.getvalue(),
-        file_name="cleaned_dataset.csv",
-        mime="text/csv",
-        use_container_width=True,
-    )
-    st.caption(f"{cleaned.shape[0]:,} rows × {cleaned.shape[1]} cols")
+with final_downloads_slot.container():
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        cleaned = pd.concat([st.session_state.app_X_train, st.session_state.app_X_test], axis=0)
+        csv_buf = io.BytesIO()
+        cleaned.to_csv(csv_buf, index=False)
+        st.download_button(
+            "⬇️  Download Cleaned Dataset (CSV)",
+            data=csv_buf.getvalue(),
+            file_name="cleaned_dataset.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        st.caption(f"{cleaned.shape[0]:,} rows × {cleaned.shape[1]} cols")
 
-with dl2:
-    mdl_buf = io.BytesIO()
-    joblib.dump(st.session_state.app_final_model, mdl_buf)
-    st.download_button(
-        "⬇️  Download Trained Model (.pkl)",
-        data=mdl_buf.getvalue(),
-        file_name=f"tuned_{best_model.replace(' ', '_').lower()}.pkl",
-        mime="application/octet-stream",
-        use_container_width=True,
-    )
-    st.caption(f"Model: {best_model}")
+    with dl2:
+        mdl_buf = io.BytesIO()
+        joblib.dump(st.session_state.app_final_model, mdl_buf)
+        st.download_button(
+            "⬇️  Download Trained Model (.pkl)",
+            data=mdl_buf.getvalue(),
+            file_name=f"tuned_{best_model.replace(' ', '_').lower()}.pkl",
+            mime="application/octet-stream",
+            use_container_width=True,
+        )
+        st.caption(f"Model: {best_model}")

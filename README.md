@@ -1,83 +1,122 @@
-# ⚙️ CSV-to-Model Auto-Tuner (AutoML Engine)
+<div align="center">
+  <h1>⚙️ AutoML Engine</h1>
+  <p>
+    <strong>An end-to-end Machine Learning pipeline that transforms raw, messy CSV datasets into production-ready models in a single click.</strong>
+  </p>
+  <p>
+    <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.9+-blue.svg" alt="Python 3.9+"></a>
+    <a href="https://streamlit.io/"><img src="https://img.shields.io/badge/Streamlit-FF4B4B.svg?logo=streamlit&logoColor=white" alt="Streamlit"></a>
+    <a href="https://scikit-learn.org/"><img src="https://img.shields.io/badge/scikit--learn-%23F7931E.svg?logo=scikit-learn&logoColor=white" alt="Scikit-Learn"></a>
+    <a href="https://github.com/nj-codes-24/CSV-to-Model-Auto-Tuner/issues"><img src="https://img.shields.io/badge/contributions-welcome-brightgreen.svg" alt="Contributions Welcome"></a>
+  </p>
+</div>
 
-An end-to-end Machine Learning pipeline and interactive web application that transforms raw, messy CSV datasets into production-ready, hyperparameter-tuned machine learning models in a single click.
+<hr>
 
-Built with **Python**, **Streamlit**, and **Scikit-Learn**, this tool bridges the gap between raw data and deployment by automating rigorous, industry-standard Exploratory Data Analysis (EDA) and model benchmarking.
+## 📖 Overview
+
+The **AutoML Engine** (CSV-to-Model Auto-Tuner) bridges the gap between messy real-world data and production deployment. Built for data scientists and developers alike, it fully automates rigorous, industry-standard Exploratory Data Analysis (EDA), statistical feature selection, algorithm benchmarking, and hyperparameter tuning.
+
+By abstracting away the boilerplate of data preparation and model selection, this engine allows you to go from a raw `.csv` file to a deployable `.pkl` model in under a minute, all wrapped in a sleek, glassmorphic UI.
 
 ---
 
-## ✨ Key Features
+## ✨ Features
 
 ### 🧪 1. Leakage-Free, Industry-Standard EDA
-The engine automatically detects whether your dataset requires **Classification** or **Regression** and executes an 8-phase data preparation pipeline. All transformations are fitted strictly on the training set to prevent data leakage.
-- **Smart Imputation:** Automatically median-fills skewed numeric data, mean-fills normal distributions, and handles categorical nulls.
-- **Statistical Feature Selection:** Drops multicollinear features (>0.80 correlation) and utilizes ANOVA (Regression) or Chi-Square (Classification) F-tests to drop statistically insignificant columns.
+The engine executes a rigorous 8-phase data preparation pipeline. All transformations are fitted **strictly on the training set** to prevent data leakage.
+- **Smart Imputation:** Dynamically median-fills skewed numeric data, mean-fills normal distributions, and handles categorical nulls.
+- **Statistical Feature Selection:** Eliminates multicollinear features (>0.80 correlation) and utilizes ANOVA (Regression) or Chi-Square (Classification) F-tests to drop statistically insignificant columns.
 - **Outlier & Skewness Handling:** Caps outliers using IQR boundaries and applies `log1p` transformations to highly skewed target variables to stabilize variance.
-- **Hybrid Encoding:** Dynamically routes low-cardinality features (≤10 unique) to One-Hot Encoding and high-cardinality features to Target Encoding.
+- **Hybrid Encoding:** Routes low-cardinality features (≤10 unique) to One-Hot Encoding and high-cardinality features to Target Encoding.
 
-### 🌲 2. RF Signal Extraction
+### 🌲 2. Random Forest Signal Extraction
 Before training, the engine runs a Random Forest Feature Importance Scan to rank features, stripping away noise and isolating only the top *N* strongest predictive signals.
 
 ### 📊 3. Automated Benchmarking & Tuning
-The cleaned data is evaluated against a gauntlet of 8 algorithms (including XGBoost, Gradient Boosting, Random Forest, Ridge/Lasso, etc.). 
-- **Smart Metrics:** The engine dynamically selects the right evaluation metric (e.g., switching to F1-Weighted if it detects severe class imbalance, or R² for regression).
+The cleaned data is evaluated against a gauntlet of 8 state-of-the-art algorithms (including XGBoost, Gradient Boosting, Random Forest, AdaBoost, Ridge/Lasso, and SVM). 
+- **Smart Metrics:** The engine dynamically selects the right evaluation metric (e.g., automatically switching to F1-Weighted if it detects severe class imbalance).
 - **Hyperparameter Tuning:** The winning baseline model is passed through a `RandomizedSearchCV` to find optimal hyperparameters via Cross-Validation.
 
 ### 💻 4. Premium "Glassmorphic" UI & Handoff
-Ditching standard dashboards, the app features a sleek, dark-mode glassmorphic interface with a linear "Wizard" execution flow.
-- **Executive Log:** Watch the engine make decisions in real-time. The UI prints exactly *why* a column was dropped or *how* a value was imputed.
-- **Single-Click Deployment:** Download the final tuned model as a `.pkl` file (ready for production) alongside the fully cleaned and encoded dataset as a CSV.
+- **Executive Log:** Watch the engine make decisions in real-time. The UI prints exactly *why* a column was dropped or *how* a value was imputed progressively as it runs.
+- **Single-Click Deployment:** Instantly download the final tuned model as a serialized `.pkl` file (ready for production integration) alongside the fully cleaned and encoded dataset as a CSV.
 
 ---
 
-## 🚀 Installation & Usage
+## 🚀 Installation & Quick Start
 
 ### Prerequisites
-Ensure you have Python 3.9+ installed.
+- Python 3.9 or higher
+- Git
 
-### Setup
-1. Clone the repository:
+### Setup Instructions
+
+1. **Clone the repository:**
    ```bash
    git clone https://github.com/nj-codes-24/CSV-to-Model-Auto-Tuner.git
    cd CSV-to-Model-Auto-Tuner
    ```
 
-2. Install the required dependencies:
+2. **Create a Virtual Environment (Recommended):**
+   ```bash
+   python3 -m venv venv
+   source venv/bin/activate  # On Windows use: venv\Scripts\activate
+   ```
+
+3. **Install Dependencies:**
    ```bash
    pip install -r requirements.txt
    ```
 
-3. Launch the AutoML Engine:
+4. **Launch the Engine:**
    ```bash
    streamlit run app.py
    ```
 
-### Usage Instructions
-1. Open the local Streamlit URL in your browser (usually `http://localhost:8501`).
-2. Drop any CSV dataset (e.g., housing prices, customer churn, medical records) into the upload zone.
-3. Select your **Target Variable** from the dropdown menu.
-4. *(Optional)* Open the "Advanced Parameters" tab to adjust the test split ratio, Cross-Validation folds, top N features, or flag specific leakage columns to be ignored.
-5. Click **Launch Engine** and watch the automated pipeline do the heavy lifting!
+---
+
+## 🎯 Usage Guide
+
+1. **Upload:** Open the local Streamlit URL (`http://localhost:8501`) and drop any raw CSV dataset into the upload zone.
+2. **Configure:** Select your **Target Variable** from the dropdown. *(Optional: Open "Advanced Parameters" to adjust the train/test split, CV folds, or explicitly define data leakage columns to ignore).*
+3. **Launch:** Click **⚡ Launch Engine**.
+4. **Monitor:** Watch the progressively rendering **Executive Log** as the engine cleans your data, followed by the background model training logs.
+5. **Deploy:** Review the final benchmarks and download your clean dataset and trained `.pkl` model directly from the UI.
 
 ---
 
-## 📂 Project Structure
+## 🏗️ Architecture
 
 ```text
 CSV-to-Model-Auto-Tuner/
-├── app.py                  # The Streamlit UI (Wizard flow, Executive log, Downloads)
-├── eda_engine.py           # Core logic: 8-phase automated data cleaning & transformation
-├── pipeline.py             # ML engine: Model registries, benchmarking, and CV tuning
-├── EDA_master_class.ipynb  # Reference notebook detailing the manual EDA workflow
+├── app.py                  # Frontend: Streamlit Wizard UI, Progressive Rendering, State Management
+├── eda_engine.py           # Core backend: Automated 8-phase data cleaning & transformation logic
+├── pipeline.py             # ML backend: Model registries, CV benchmarking, and parameter grids
+├── EDA_master_class.ipynb  # Jupyter Notebook detailing the manual EDA theory behind the engine
 ├── requirements.txt        # Project dependencies
 └── .streamlit/
-    └── config.toml         # Custom dark-mode glassmorphic theme configuration
+    └── config.toml         # Custom dark-mode glassmorphic theme styling configuration
 ```
 
 ---
 
-## 🛠️ Technologies Used
-- **UI Framework:** Streamlit
-- **Data Processing:** Pandas, NumPy
-- **Machine Learning:** Scikit-Learn, XGBoost, SciPy
-- **Model Serialization:** Joblib
+## 🤝 Contributing
+
+Contributions are what make the open-source community such an amazing place to learn, inspire, and create. Any contributions you make are **greatly appreciated**.
+
+1. Fork the Project
+2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the Branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+---
+
+## 📝 License
+
+Distributed under the MIT License. See `LICENSE` for more information.
+
+<div align="center">
+  <p>Built with ❤️ by Nishchal Jain</p>
+</div>
