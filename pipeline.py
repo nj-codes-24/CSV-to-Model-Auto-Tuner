@@ -1,173 +1,166 @@
-import pandas as pd
+"""
+pipeline.py — ML Engine (Classification + Regression)
+=====================================================
+Model registries, hyperparameter grids, baseline benchmarking, and
+hyperparameter tuning for both classification and regression tasks.
+
+This module receives pre-cleaned, pre-encoded, feature-selected data
+from eda_engine.py and focuses purely on model training and evaluation.
+"""
+
 import numpy as np
+import pandas as pd
 from datetime import datetime
-from sklearn.model_selection import train_test_split, RandomizedSearchCV
-from sklearn.pipeline import Pipeline
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import StandardScaler, OneHotEncoder
+
+# ── Classification imports ───────────────────────────────────────────────────
 from sklearn.linear_model import LogisticRegression
-from sklearn.svm import LinearSVC  # ← O(N) replacement for SVC
+from sklearn.svm import LinearSVC
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import RandomForestClassifier, AdaBoostClassifier, GradientBoostingClassifier
+from sklearn.ensemble import (
+    RandomForestClassifier, AdaBoostClassifier, GradientBoostingClassifier,
+)
 from xgboost import XGBClassifier
-from sklearn.metrics import accuracy_score, classification_report
 from sklearn.calibration import CalibratedClassifierCV
 
-# ── Tuning knobs ────────────────────────────────────────────────────────────────
-# If the training split is larger than this, models that don't scale well
-# (KNN, SVC-variant) will be trained on a random subsample instead.
-_SAMPLE_THRESHOLD = 50_000   # rows
-_SLOW_MODEL_SAMPLE = 20_000  # rows used for slow models when above threshold
-# ────────────────────────────────────────────────────────────────────────────────
+# ── Regression imports ───────────────────────────────────────────────────────
+from sklearn.linear_model import LinearRegression, Ridge, Lasso
+from sklearn.tree import DecisionTreeRegressor
+from sklearn.ensemble import (
+    RandomForestRegressor, AdaBoostRegressor, GradientBoostingRegressor,
+)
+from xgboost import XGBRegressor
+
+# ── Shared imports ───────────────────────────────────────────────────────────
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.metrics import (
+    accuracy_score, classification_report, f1_score,
+    r2_score, mean_absolute_error, mean_squared_error,
+)
+
+# ── Tuning knobs ─────────────────────────────────────────────────────────────
+_SAMPLE_THRESHOLD = 50_000
+_SLOW_MODEL_SAMPLE = 20_000
 
 
-def auto_drop_columns(df: pd.DataFrame, target_var: str) -> dict:
-    """
-    Automatically detects and returns a dictionary of useless/noisy columns to drop, grouped by reason:
-    1. All NaNs (Empty)
-    2. Single unique value (Zero variance)
-    3. High cardinality strings (IDs/Names/Hashes)
-    4. Multicollinear numeric columns (>0.95 correlation)
-    """
-    drop_reasons = {
-        "empty": [],
-        "zero_variance": [],
-        "high_cardinality": [],
-        "multicollinear": []
+# =============================================================================
+# CLASSIFICATION REGISTRY
+# =============================================================================
+
+def _build_classification_models(use_class_weight: bool = False):
+    """Build the classification model registry, optionally with balanced class weights."""
+    cw = "balanced" if use_class_weight else None
+    return {
+        "Logistic Regression": LogisticRegression(
+            max_iter=1000, n_jobs=-1, class_weight=cw,
+        ),
+        "Decision Tree": DecisionTreeClassifier(
+            random_state=42, class_weight=cw,
+        ),
+        "LinearSVC": CalibratedClassifierCV(
+            LinearSVC(max_iter=2000, random_state=42, class_weight=cw),
+        ),
+        "KNN": KNeighborsClassifier(n_jobs=-1),
+        "Random Forest": RandomForestClassifier(
+            n_jobs=-1, random_state=42, class_weight=cw,
+        ),
+        "AdaBoost": AdaBoostClassifier(random_state=42),
+        "Gradient Boosting": GradientBoostingClassifier(random_state=42),
+        "XGBoost": XGBClassifier(
+            random_state=42, eval_metric="logloss",
+            verbosity=0, n_jobs=-1, tree_method="hist",
+        ),
     }
 
-    for col in df.columns:
-        if col == target_var:
-            continue
 
-        # 1. Empty Columns
-        if df[col].isna().all():
-            drop_reasons["empty"].append(col)
-            continue
-
-        # 2. Zero Variance
-        if df[col].nunique(dropna=True) <= 1:
-            drop_reasons["zero_variance"].append(col)
-            continue
-
-        # 3. High Cardinality (for categorical/string types)
-        num_unique = df[col].nunique()
-        if df[col].dtype == 'object' or df[col].dtype.name == 'category':
-            if num_unique > 100 or num_unique > len(df) * 0.5:
-                drop_reasons["high_cardinality"].append(col)
-                continue
-
-        # 4. Numeric IDs (like RowNumber, CustomerId)
-        if pd.api.types.is_numeric_dtype(df[col]):
-            col_lower = str(col).lower()
-            is_id_name = any(x in col_lower for x in ['id', 'row', 'index', 'uuid'])
-            if num_unique == len(df) or (is_id_name and num_unique > len(df) * 0.5):
-                drop_reasons["high_cardinality"].append(col)
-                continue
-
-    # 5. Multicollinearity
-    dropped_so_far = set(
-        drop_reasons["empty"] + drop_reasons["zero_variance"] + drop_reasons["high_cardinality"]
-    )
-    remaining_num_cols = [
-        c for c in df.select_dtypes(include=["int64", "float64"]).columns
-        if c not in dropped_so_far and c != target_var
-    ]
-
-    if len(remaining_num_cols) > 1:
-        corr_matrix = df[remaining_num_cols].corr().abs()
-        upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool))
-        to_drop = [column for column in upper.columns if any(upper[column] > 0.95)]
-        drop_reasons["multicollinear"] = to_drop
-
-    return drop_reasons
-
-
-# ── Model registry ──────────────────────────────────────────────────────────────
-# LinearSVC: same algorithm family as SVC but O(N) — safe on 200k rows.
-# Wrapped in CalibratedClassifierCV so predict_proba works if needed downstream.
-# n_jobs=-1 on tree ensembles uses all CPU cores without blocking the GIL for long.
-MODELS = {
-    "Logistic Regression": LogisticRegression(max_iter=1000, n_jobs=-1),
-    "Decision Tree":      DecisionTreeClassifier(random_state=42),
-    "LinearSVC":          CalibratedClassifierCV(LinearSVC(max_iter=2000, random_state=42)),
-    "KNN":                KNeighborsClassifier(n_jobs=-1),
-    "Random Forest":      RandomForestClassifier(n_jobs=-1, random_state=42),
-    "AdaBoost":           AdaBoostClassifier(random_state=42),
-    "Gradient Boosting":  GradientBoostingClassifier(random_state=42),
-    "XGBoost":            XGBClassifier(random_state=42, eval_metric="logloss",
-                                        verbosity=0, n_jobs=-1, tree_method="hist"),
+CLASSIFICATION_PARAM_GRIDS = {
+    "Logistic Regression": {"C": [0.01, 0.1, 1, 10]},
+    "Decision Tree": {
+        "max_depth": [None, 5, 10, 15, 20],
+        "min_samples_split": [2, 5, 10],
+    },
+    "LinearSVC": {"estimator__C": [0.01, 0.1, 1, 10]},
+    "KNN": {
+        "n_neighbors": [3, 5, 7, 11],
+        "weights": ["uniform", "distance"],
+    },
+    "Random Forest": {
+        "n_estimators": [50, 100, 200],
+        "max_depth": [None, 5, 10, 15],
+    },
+    "AdaBoost": {
+        "n_estimators": [50, 100, 200],
+        "learning_rate": [0.01, 0.1, 0.5, 1.0],
+    },
+    "Gradient Boosting": {
+        "n_estimators": [50, 100, 200],
+        "learning_rate": [0.01, 0.1, 0.2],
+        "max_depth": [3, 5, 7],
+    },
+    "XGBoost": {
+        "n_estimators": [50, 100, 200],
+        "learning_rate": [0.01, 0.1, 0.2],
+        "max_depth": [3, 5, 7],
+    },
 }
 
-# Models that still don't scale to huge N — they will be trained on a subsample
 _SLOW_MODELS = {"KNN", "LinearSVC"}
 
-PARAM_GRIDS = {
-    "Logistic Regression": {"model__C": [0.1, 1, 10]},
-    "Decision Tree":      {
-        "model__max_depth": [None, 5, 10, 15],
-        "model__min_samples_split": [2, 5, 10],
+
+# =============================================================================
+# REGRESSION REGISTRY
+# =============================================================================
+
+REGRESSION_MODELS = {
+    "Linear Regression": LinearRegression(n_jobs=-1),
+    "Ridge": Ridge(random_state=42),
+    "Lasso": Lasso(random_state=42, max_iter=5000),
+    "Decision Tree": DecisionTreeRegressor(random_state=42),
+    "Random Forest": RandomForestRegressor(n_jobs=-1, random_state=42),
+    "AdaBoost": AdaBoostRegressor(random_state=42),
+    "Gradient Boosting": GradientBoostingRegressor(random_state=42),
+    "XGBoost": XGBRegressor(
+        random_state=42, verbosity=0, n_jobs=-1, tree_method="hist",
+    ),
+}
+
+REGRESSION_PARAM_GRIDS = {
+    "Linear Regression": {},  # No hyperparameters
+    "Ridge": {"alpha": [0.01, 0.1, 1, 10, 100]},
+    "Lasso": {"alpha": [0.0001, 0.001, 0.01, 0.1, 1]},
+    "Decision Tree": {
+        "max_depth": [None, 5, 10, 15, 20],
+        "min_samples_split": [2, 5, 10],
     },
-    "LinearSVC":          {
-        "model__estimator__C": [0.1, 1, 10],
+    "Random Forest": {
+        "n_estimators": [50, 100, 200],
+        "max_depth": [None, 5, 10, 15],
     },
-    "KNN":                {
-        "model__n_neighbors": [3, 5, 7],
-        "model__weights": ["uniform", "distance"],
+    "AdaBoost": {
+        "n_estimators": [50, 100, 200],
+        "learning_rate": [0.01, 0.1, 0.5, 1.0],
     },
-    "Random Forest":      {
-        "model__n_estimators": [50, 100, 200],
-        "model__max_depth": [None, 5, 10],
+    "Gradient Boosting": {
+        "n_estimators": [50, 100, 200],
+        "learning_rate": [0.01, 0.1, 0.2],
+        "max_depth": [3, 5, 7],
     },
-    "AdaBoost":           {
-        "model__n_estimators": [50, 100, 200],
-        "model__learning_rate": [0.01, 0.1, 1.0],
-    },
-    "Gradient Boosting":  {
-        "model__n_estimators": [50, 100, 200],
-        "model__learning_rate": [0.01, 0.1, 0.2],
-        "model__max_depth": [3, 5, 7],
-    },
-    "XGBoost":            {
-        "model__n_estimators": [50, 100, 200],
-        "model__learning_rate": [0.01, 0.1, 0.2],
-        "model__max_depth": [3, 5, 7],
+    "XGBoost": {
+        "n_estimators": [50, 100, 200],
+        "learning_rate": [0.01, 0.1, 0.2],
+        "max_depth": [3, 5, 7],
     },
 }
-# ────────────────────────────────────────────────────────────────────────────────
 
 
-def build_preprocessor(X: pd.DataFrame):
-    """Infer numeric and categorical columns, return a ColumnTransformer."""
-    numeric_cols = X.select_dtypes(include=["int64", "float64"]).columns.tolist()
-    categorical_cols = X.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
-
-    numeric_transformer = Pipeline(steps=[
-        ("impute", SimpleImputer(strategy="mean")),
-        ("scale", StandardScaler()),
-    ])
-
-    # sparse_output=True (the default) keeps the OHE matrix sparse → much less RAM
-    categorical_transformer = Pipeline(steps=[
-        ("impute", SimpleImputer(strategy="most_frequent")),
-        ("encode", OneHotEncoder(drop="if_binary", handle_unknown="ignore", sparse_output=True)),
-    ])
-
-    preprocessor = ColumnTransformer(transformers=[
-        ("num", numeric_transformer, numeric_cols),
-        ("cat", categorical_transformer, categorical_cols),
-    ])
-
-    return preprocessor, numeric_cols, categorical_cols
-
+# =============================================================================
+# SHARED HELPERS
+# =============================================================================
 
 def _maybe_subsample(X_train, y_train, model_name: str):
     """
     Return a (possibly subsampled) view of training data.
     Slow models get capped at _SLOW_MODEL_SAMPLE rows when the dataset is large.
-    Fast models always see the full training set.
     """
     n = len(X_train)
     if model_name in _SLOW_MODELS and n > _SAMPLE_THRESHOLD:
@@ -178,88 +171,217 @@ def _maybe_subsample(X_train, y_train, model_name: str):
     return X_train, y_train
 
 
-def run_baseline(X_train, X_test, y_train, y_test, preprocessor, progress_callback=None):
-    """
-    Train all models and return a dict of {model_name: accuracy}.
-    progress_callback(idx, total, name) is called after each model finishes.
+def _sklearn_scoring(metric: str) -> str:
+    """Map our metric names to sklearn scoring strings."""
+    mapping = {
+        "accuracy": "accuracy",
+        "f1_weighted": "f1_weighted",
+        "r2": "r2",
+        "neg_mae": "neg_mean_absolute_error",
+        "neg_rmse": "neg_root_mean_squared_error",
+    }
+    return mapping.get(metric, metric)
 
-    Large-dataset safety:
-    - Slow models (KNN, LinearSVC) are trained on a subsample if N > _SAMPLE_THRESHOLD.
-    - Sparse OHE matrices are kept sparse throughout.
-    - n_jobs=-1 on compatible models lets scikit-learn parallelise without blocking.
+
+# =============================================================================
+# CLASSIFICATION BASELINE & TUNING
+# =============================================================================
+
+def run_baseline_classification(
+    X_train, X_test, y_train, y_test,
+    scoring_metric: str = "accuracy",
+    use_class_weight: bool = False,
+    progress_callback=None,
+):
     """
+    Train all classification models and return results ranked by the chosen metric.
+
+    Returns (results_dict, best_model_name, best_score).
+    results_dict maps model_name → {accuracy, f1_weighted}.
+    """
+    models = _build_classification_models(use_class_weight)
     results = {}
-    best_accuracy = 0
+    best_score = -1
     best_model_name = ""
 
-    for idx, (name, model) in enumerate(MODELS.items()):
+    for idx, (name, model) in enumerate(models.items()):
         if progress_callback:
-            progress_callback(idx, len(MODELS), name, status="start")
+            progress_callback(idx, len(models), name, status="start")
 
         print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚙️ Initializing {name}...")
 
         X_tr, y_tr = _maybe_subsample(X_train, y_train, name)
         if len(X_tr) < len(X_train):
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Subsampling dataset to {len(X_tr):,} rows for performance...")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Subsampling to {len(X_tr):,} rows...")
 
-        pipeline = Pipeline(steps=[
-            ("preprocessor", preprocessor),
-            ("model", model),
-        ])
         print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 Fitting model...")
-        pipeline.fit(X_tr, y_tr)
-        
-        accuracy = accuracy_score(y_test, pipeline.predict(X_test))
-        results[name] = accuracy
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {name} completed with accuracy: {accuracy:.4f}\n")
+        model.fit(X_tr, y_tr)
 
-        if accuracy > best_accuracy:
-            best_accuracy = accuracy
+        y_pred = model.predict(X_test)
+        acc = accuracy_score(y_test, y_pred)
+        f1 = f1_score(y_test, y_pred, average="weighted")
+
+        results[name] = {"Accuracy": round(acc, 4), "F1 (weighted)": round(f1, 4)}
+
+        score = acc if scoring_metric == "accuracy" else f1
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {name} — Accuracy: {acc:.4f}, F1: {f1:.4f}\n")
+
+        if score > best_score:
+            best_score = score
             best_model_name = name
 
         if progress_callback:
-            progress_callback(idx + 1, len(MODELS), name, status="end")
+            progress_callback(idx + 1, len(models), name, status="end")
 
-    return results, best_model_name, best_accuracy
+    return results, best_model_name, best_score
 
 
-def run_tuning(X_train, X_test, y_train, y_test, preprocessor, best_model_name, cv_folds):
+def run_tuning_classification(
+    X_train, X_test, y_train, y_test,
+    best_model_name: str, cv_folds: int,
+    scoring_metric: str = "accuracy",
+    use_class_weight: bool = False,
+):
     """
-    Run RandomizedSearchCV on the winning model and return tuning results.
+    Run RandomizedSearchCV on the winning classification model.
 
-    Large-dataset safety:
-    - Slow models are tuned on a subsample (same cap as baseline).
-    - The final winner is retrained on the full training set.
+    Returns (final_accuracy, final_f1, best_params, report_dict, final_model).
     """
-    winning_pipeline = Pipeline(steps=[
-        ("preprocessor", preprocessor),
-        ("model", MODELS[best_model_name]),
-    ])
+    models = _build_classification_models(use_class_weight)
+    model = models[best_model_name]
 
     X_tune, y_tune = _maybe_subsample(X_train, y_train, best_model_name)
 
-    grid_search = RandomizedSearchCV(
-        winning_pipeline,
-        PARAM_GRIDS[best_model_name],
-        cv=cv_folds,
-        n_iter=10,
-        random_state=42,
-        n_jobs=1,          # keep 1 here — outer parallelism can OOM inside CV
-        scoring="accuracy",
+    param_grid = CLASSIFICATION_PARAM_GRIDS[best_model_name]
+    if not param_grid:
+        # No hyperparameters to tune — just refit on full data
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        acc = accuracy_score(y_test, y_pred)
+        f1 = f1_score(y_test, y_pred, average="weighted")
+        report = classification_report(y_test, y_pred, output_dict=True)
+        return acc, f1, {}, report, model
+
+    search = RandomizedSearchCV(
+        model, param_grid,
+        cv=cv_folds, n_iter=min(10, _grid_combinations(param_grid)),
+        random_state=42, n_jobs=1,
+        scoring=_sklearn_scoring(scoring_metric),
         verbose=3,
     )
+    search.fit(X_tune, y_tune)
 
-    grid_search.fit(X_tune, y_tune)
+    final_model = search.best_estimator_
+    final_model.fit(X_train, y_train)  # Retrain on full train set
 
-    final_model = grid_search.best_estimator_
+    y_pred = final_model.predict(X_test)
+    acc = accuracy_score(y_test, y_pred)
+    f1 = f1_score(y_test, y_pred, average="weighted")
+    report = classification_report(y_test, y_pred, output_dict=True)
+    best_params = search.best_params_
 
-    # Retrain winning architecture on the FULL training set
+    return acc, f1, best_params, report, final_model
+
+
+# =============================================================================
+# REGRESSION BASELINE & TUNING
+# =============================================================================
+
+def run_baseline_regression(
+    X_train, X_test, y_train, y_test,
+    progress_callback=None,
+):
+    """
+    Train all regression models and return results ranked by R².
+
+    Returns (results_dict, best_model_name, best_r2).
+    results_dict maps model_name → {R², MAE, RMSE}.
+    """
+    results = {}
+    best_r2 = -float("inf")
+    best_model_name = ""
+
+    for idx, (name, model) in enumerate(REGRESSION_MODELS.items()):
+        if progress_callback:
+            progress_callback(idx, len(REGRESSION_MODELS), name, status="start")
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚙️ Initializing {name}...")
+
+        X_tr, y_tr = _maybe_subsample(X_train, y_train, name)
+        if len(X_tr) < len(X_train):
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Subsampling to {len(X_tr):,} rows...")
+
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 Fitting model...")
+        model.fit(X_tr, y_tr)
+
+        y_pred = model.predict(X_test)
+        r2 = r2_score(y_test, y_pred)
+        mae = mean_absolute_error(y_test, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+
+        results[name] = {
+            "R²": round(r2, 4),
+            "MAE": round(mae, 4),
+            "RMSE": round(rmse, 4),
+        }
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {name} — R²: {r2:.4f}, MAE: {mae:.4f}, RMSE: {rmse:.4f}\n")
+
+        if r2 > best_r2:
+            best_r2 = r2
+            best_model_name = name
+
+        if progress_callback:
+            progress_callback(idx + 1, len(REGRESSION_MODELS), name, status="end")
+
+    return results, best_model_name, best_r2
+
+
+def run_tuning_regression(
+    X_train, X_test, y_train, y_test,
+    best_model_name: str, cv_folds: int,
+):
+    """
+    Run RandomizedSearchCV on the winning regression model.
+
+    Returns (final_r2, final_mae, final_rmse, best_params, final_model).
+    """
+    model = REGRESSION_MODELS[best_model_name]
+
+    X_tune, y_tune = _maybe_subsample(X_train, y_train, best_model_name)
+
+    param_grid = REGRESSION_PARAM_GRIDS[best_model_name]
+    if not param_grid:
+        model.fit(X_train, y_train)
+        y_pred = model.predict(X_test)
+        r2 = r2_score(y_test, y_pred)
+        mae = mean_absolute_error(y_test, y_pred)
+        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+        return r2, mae, rmse, {}, model
+
+    search = RandomizedSearchCV(
+        model, param_grid,
+        cv=cv_folds, n_iter=min(10, _grid_combinations(param_grid)),
+        random_state=42, n_jobs=1,
+        scoring="r2",
+        verbose=3,
+    )
+    search.fit(X_tune, y_tune)
+
+    final_model = search.best_estimator_
     final_model.fit(X_train, y_train)
 
-    y_pred_final = final_model.predict(X_test)
-    final_accuracy = accuracy_score(y_test, y_pred_final)
+    y_pred = final_model.predict(X_test)
+    r2 = r2_score(y_test, y_pred)
+    mae = mean_absolute_error(y_test, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 
-    best_params = {k.replace("model__", ""): v for k, v in grid_search.best_params_.items()}
-    report = classification_report(y_test, y_pred_final, output_dict=True)
+    return r2, mae, rmse, search.best_params_, final_model
 
-    return final_accuracy, best_params, report, final_model
+
+def _grid_combinations(param_grid: dict) -> int:
+    """Count total combinations in a param grid."""
+    n = 1
+    for v in param_grid.values():
+        if isinstance(v, list):
+            n *= len(v)
+    return n
