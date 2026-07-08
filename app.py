@@ -323,7 +323,21 @@ if "app_done" not in st.session_state:
     mdl_prog_slot.empty()
     mdl_log_slot.empty()
 
-    
+    # Render Stage 2 Results so they are visible while Stage 3 is running
+    res_df = (
+        pd.DataFrame(mdl_results).T
+        .reset_index().rename(columns={"index": "Algorithm"})
+        .sort_values(sort_col, ascending=False).reset_index(drop=True)
+    )
+    col_tbl, col_cht = st.columns([1, 1])
+    with col_tbl:
+        st.dataframe(
+            res_df.style.highlight_max(axis=0, subset=[sort_col], color="#1e3a5f"),
+            use_container_width=True,
+        )
+    with col_cht:
+        st.bar_chart(data=res_df, x="Algorithm", y=sort_col)
+
     # ── Stage 3: Tuning ──
     st.header("Stage 3: Hyperparameter Tuning")
     
@@ -371,6 +385,7 @@ if "app_done" not in st.session_state:
         "app_target_log":    out.get("target_log_transformed", False),
         "app_done":          True,
     })
+    st.rerun()
 
 
 # ── RENDER FINAL UI RESULTS ──
