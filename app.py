@@ -590,6 +590,8 @@ if "app_done" not in st.session_state:
         "app_top_features":  top_features,
         "app_X_train":       X_train,
         "app_X_test":        X_test,
+        "app_y_train":       y_train,
+        "app_y_test":        y_test,
         "app_target_log":    out.get("target_log_transformed", False),
         "app_done":          True,
     })
@@ -690,7 +692,10 @@ if "app_done" in st.session_state:
     
     dl1, dl2 = st.columns(2)
     with dl1:
-        cleaned = pd.concat([st.session_state.app_X_train, st.session_state.app_X_test], axis=0)
+        X_all = pd.concat([st.session_state.app_X_train, st.session_state.app_X_test], axis=0)
+        y_all = pd.concat([st.session_state.app_y_train, st.session_state.app_y_test], axis=0)
+        cleaned = X_all.copy()
+        cleaned[st.session_state.app_target] = y_all
         csv_buf = io.BytesIO()
         cleaned.to_csv(csv_buf, index=False)
         st.download_button(
