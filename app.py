@@ -408,6 +408,8 @@ if "app_done" not in st.session_state:
     top_n = get_top_n_models(mdl_results, all_models, sort_col, n=3)
     optimized_top_models = []
     
+    tuning_reports = {}
+    
     best_tuned_score = -float('inf')
     best_tuned_model = None
     best_tuned_metrics = {}
@@ -451,7 +453,16 @@ if "app_done" not in st.session_state:
                     print(f"⚠️ Tuning failed for {m_name}: {e}. Falling back to baseline.")
                     
         # Decide whether tuning helped this specific model
-        if t_score > b_score and t_model is not None:
+        improved_flag = t_score > b_score and t_model is not None
+        
+        tuning_reports[m_name] = {
+            "baseline_score": b_score,
+            "tuned_score": t_score if t_score > -float('inf') else b_score,
+            "improved": improved_flag,
+            "params": t_params if improved_flag else {}
+        }
+        
+        if improved_flag:
             optimized_top_models.append((m_name, clone(t_model)))
             if t_score > best_tuned_score:
                 best_tuned_score = t_score
@@ -555,7 +566,9 @@ if "app_done" not in st.session_state:
         "app_task_type":     task_type,
         "app_metric_info":   metric_info,
         "app_mdl_results":   mdl_results,
+        "app_tuning_reports": tuning_reports,
         "app_ens_results":   ensemble_results,
+        "app_top_n_names":   [n for n, m in top_n],
         "app_best_model":    best_overall,
         "app_best_score":    best_score,
         "app_tuned_score":   tuned_score,
@@ -604,32 +617,54 @@ if "app_done" in st.session_state:
     if "tune_prog_slot" not in locals():
         st.header("Stage 3: Hyperparameter Tuning")
         
-    improved = st.session_state.app_improved
-    best_params = st.session_state.app_best_params
-    best_model = st.session_state.app_best_model
     metric_name = st.session_state.app_metric_info["metric_display_name"]
+    tuning_reports = st.session_state.app_tuning_reports
+    
+    for m_name, report in tuning_reports.items():
+        if report["improved"]:
+            st.success(f"Tuning improved **{m_name}**! {metric_name} increased from **{report['baseline_score']:.4f}** to **{report['tuned_score']:.4f}**.")
+            with st.expander(f"View {m_name} Optimal Hyperparameters"):
+                st.json(report["params"])
+        else:
+            st.info(f"Tuning did not improve **{m_name}**. Kept baseline parameters ({metric_name}: **{report['baseline_score']:.4f}**).")
 
-    if improved and best_params:
-        st.success(f"Tuning improved the model! **{best_model}** {metric_name} increased from **{st.session_state.app_best_score:.4f}** to **{st.session_state.app_tuned_score:.4f}**.")
-        st.markdown("### Optimal Hyperparameters:")
-        st.json(best_params)
-    else:
-        st.info(f"Tuning did not yield a better score. Default hyperparameters for **{best_model}** are optimal.")
-        st.markdown(f"**Best {metric_name}:** {st.session_state.app_best_score:.4f}")
+    # Render Stage 4 Results
+    st.header("Stage 4: Advanced Ensembling")
+    st.caption(f"Building ensembles using the optimized Top 3 models: **{', '.join(st.session_state.app_top_n_names)}**")
+    
+    if st.session_state.app_ens_results:
+        ens_df = (
+            pd.DataFrame(st.session_state.app_ens_results).T
+            .reset_index().rename(columns={"index": "Ensemble"})
+            .sort_values(st.session_state.app_sort_col, ascending=False).reset_index(drop=True)
+        )
+        col_ens_tbl, col_ens_cht = st.columns([1, 1])
+        with col_ens_tbl:
+            st.dataframe(
+                ens_df.style.highlight_max(axis=0, subset=[st.session_state.app_sort_col], color="#1e3a5f"),
+                use_container_width=True,
+            )
+        with col_ens_cht:
+            st.bar_chart(data=ens_df, x="Ensemble", y=st.session_state.app_sort_col)
 
     # Render Final Conclusion
-    st.header("Final Conclusion")
-    delta = st.session_state.app_tuned_score - st.session_state.app_best_score
-    if improved and best_params:
-        detail = f"Tuning improved {metric_name} by <strong>+{delta:.4f}</strong>. Use the optimised parameters above."
+    st.header("Stage 5: Final Conclusion")
+    best_overall = st.session_state.app_best_model
+    final_score = st.session_state.app_final_metrics.get(st.session_state.app_sort_col, 0)
+    
+    # Determine where the best model came from for the banner text
+    if best_overall in st.session_state.app_ens_results:
+        detail = f"The Ensembler outperformed individual models! Achieved **{final_score:.4f}** {metric_name}."
+    elif best_overall in tuning_reports and tuning_reports[best_overall]["improved"]:
+        detail = f"Tuning provided the best result! Achieved **{final_score:.4f}** {metric_name}."
     else:
-        detail = "Default parameters are optimal. No tuning improvement detected."
+        detail = f"The baseline {best_overall} could not be beaten! Achieved **{final_score:.4f}** {metric_name}."
 
     st.markdown(f"""
     <div class="vb">
         <div class="vb-trophy">🏆</div>
         <div class="vb-label">Winning Model</div>
-        <div class="vb-model">{best_model}</div>
+        <div class="vb-model">{best_overall}</div>
         <div class="vb-detail">{detail}</div>
     </div>
     """, unsafe_allow_html=True)
