@@ -13,7 +13,7 @@ from sklearn.model_selection import train_test_split
 from eda_engine import (
     basic_trim, detect_task_type, recommend_metric,
     smart_impute, feature_selection, handle_outliers_and_skew,
-    hybrid_encode, safe_scale, rf_importance_scan,
+    hybrid_encode, safe_scale, rf_importance_scan, apply_eda_pipeline,
 )
 from pipeline import (
     run_baseline_classification, run_tuning_classification,
@@ -570,7 +570,28 @@ if "app_done" not in st.session_state:
         best_params_final = {"Ensemble": "True", "Top N Models": ", ".join([n for n, m in optimized_top_models])}
 
     # Save everything to session state
+    eda_state = {
+        "drop_cols": trim["high_missing_cols"] + trim["near_constant_cols"] + trim["id_cols_removed"] + trim["leakage_cols_removed"],
+        "impute_medians": imp.get("median_values", {}),
+        "impute_means": imp.get("mean_values", {}),
+        "fs_dropped": fs["multicollinear_dropped"] + fs["weak_categorical_dropped"],
+        "outlier_upper": out.get("upper_bounds", {}),
+        "outlier_lower": out.get("lower_bounds", {}),
+        "massive_flags": out["massive_flags_created"],
+        "rare_categories": out.get("rare_categories", {}),
+        "log_transformed": out["log_transformed_features"],
+        "target_encoder": enc.get("target_encoder"),
+        "one_hot_encoder": enc.get("one_hot_encoder"),
+        "te_cols": enc.get("target_encoded", []),
+        "ohe_cols": enc.get("one_hot_encoded", []),
+        "scale_means": sc.get("scale_means", {}),
+        "scale_stds": sc.get("scale_stds", {}),
+        "scale_dropped": sc["zero_variance_dropped"],
+        "top_features": top_features
+    }
+
     st.session_state.update({
+        "app_eda_state":     eda_state,
         "app_eda_log":       "\n".join(st.session_state._eda_log_lines),
         "app_task_type":     task_type,
         "app_metric_info":   metric_info,
@@ -721,3 +742,39 @@ if "app_done" in st.session_state:
             st.caption(f"Model: {best_overall}")
         else:
             st.info("Model download unavailable — tuning failed. Re-run with different parameters.")
+
+    st.markdown("---")
+    st.subheader("🚀 Kaggle Inference")
+    st.write("Upload an unseen test dataset (without the target column) to generate predictions.")
+    test_file = st.file_uploader("Upload test.csv", type=["csv"], key="kaggle_test")
+    if test_file is not None:
+        try:
+            test_raw = pd.read_csv(test_file)
+            test_ids = None
+            first_col = test_raw.columns[0]
+            if "id" in first_col.lower():
+                test_ids = test_raw[[first_col]].copy()
+                
+            test_transformed = apply_eda_pipeline(test_raw, st.session_state.app_eda_state)
+            preds = st.session_state.app_final_model.predict(test_transformed)
+            if st.session_state.app_target_log:
+                preds = np.expm1(preds)
+                
+            pred_df = pd.DataFrame({st.session_state.app_target: preds})
+            if test_ids is not None:
+                pred_df = pd.concat([test_ids, pred_df], axis=1)
+                
+            pred_buf = io.BytesIO()
+            pred_df.to_csv(pred_buf, index=False)
+            
+            st.success("Predictions generated successfully!")
+            st.download_button(
+                "⬇️  Download Predictions (CSV)",
+                data=pred_buf.getvalue(),
+                file_name="predictions.csv",
+                mime="text/csv",
+                use_container_width=True,
+                type="primary"
+            )
+        except Exception as e:
+            st.error(f"Error generating predictions: {e}")

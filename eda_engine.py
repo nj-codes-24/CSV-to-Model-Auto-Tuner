@@ -234,7 +234,13 @@ def smart_impute(X_train: pd.DataFrame, X_test: pd.DataFrame) -> tuple[pd.DataFr
     """
     X_train = X_train.copy()
     X_test = X_test.copy()
-    report: dict = {"categorical_imputed": [], "numeric_median": [], "numeric_mean": []}
+    report: dict = {
+        "categorical_imputed": [], 
+        "numeric_median": [], 
+        "numeric_mean": [],
+        "median_values": {},
+        "mean_values": {}
+    }
 
     # Categorical
     for col in X_train.select_dtypes(["object", "category"]).columns:
@@ -252,14 +258,17 @@ def smart_impute(X_train: pd.DataFrame, X_test: pd.DataFrame) -> tuple[pd.DataFr
             X_train[col] = X_train[col].fillna(0)
             X_test[col] = X_test[col].fillna(0)
             report["numeric_median"].append(col)
+            report["median_values"][col] = 0
             continue
         skew_val = X_train[col].skew()
         if pd.isna(skew_val) or abs(skew_val) > 1:
             val = X_train[col].median()
             report["numeric_median"].append(col)
+            report["median_values"][col] = val
         else:
             val = X_train[col].mean()
             report["numeric_mean"].append(col)
+            report["mean_values"][col] = val
         X_train[col] = X_train[col].fillna(val)
         X_test[col] = X_test[col].fillna(val)
 
@@ -388,6 +397,9 @@ def handle_outliers_and_skew(
         "rare_cats_clubbed": [],
         "log_transformed_features": [],
         "target_log_transformed": False,
+        "upper_bounds": {},
+        "lower_bounds": {},
+        "rare_categories": {}
     }
 
     numeric_cols = X_train.select_dtypes(["int64", "float64"]).columns.tolist()
@@ -422,16 +434,19 @@ def handle_outliers_and_skew(
 
         X_train[col] = X_train[col].clip(lower=lower, upper=upper)
         X_test[col] = X_test[col].clip(lower=lower, upper=upper)
+        report["upper_bounds"][col] = upper
+        report["lower_bounds"][col] = lower
         report["capped_features"] += 1
 
     # 2. Club rare categorical values
-    for col in X_train.select_dtypes("object").columns:
+    for col in X_train.select_dtypes(["object", "category"]).columns:
         freq = X_train[col].value_counts(normalize=True)
-        rare = freq[freq < 0.01].index
+        rare = freq[freq < 0.01].index.tolist()
         if len(rare) > 0:
             X_train[col] = X_train[col].replace(rare, "Other")
             X_test[col] = X_test[col].replace(rare, "Other")
             report["rare_cats_clubbed"].append(col)
+            report["rare_categories"][col] = rare
 
     # 3. Log-transform skewed features (skip Is_Massive flags)
     numeric_cols_post = [
@@ -473,7 +488,13 @@ def hybrid_encode(
     • Low-cardinality categoricals (≤10 unique): OneHotEncoder
     • Numeric columns: passed through untouched.
     """
-    report: dict = {"target_encoded": [], "one_hot_encoded": [], "numeric_passthrough": []}
+    report: dict = {
+        "target_encoded": [], 
+        "one_hot_encoded": [], 
+        "numeric_passthrough": [],
+        "target_encoder": None,
+        "one_hot_encoder": None
+    }
 
     cat_cols = X_train.select_dtypes(["object", "category"]).columns.tolist()
     numeric_cols = X_train.select_dtypes(["int64", "float64"]).columns.tolist()
@@ -504,6 +525,7 @@ def hybrid_encode(
         parts_train.append(train_te.reset_index(drop=True))
         parts_test.append(test_te.reset_index(drop=True))
         report["target_encoded"] = high_card
+        report["target_encoder"] = te
 
     # One-hot encoding
     if low_card:
@@ -519,6 +541,7 @@ def hybrid_encode(
         parts_train.append(train_ohe.reset_index(drop=True))
         parts_test.append(test_ohe.reset_index(drop=True))
         report["one_hot_encoded"] = low_card
+        report["one_hot_encoder"] = ohe
 
     X_train_enc = pd.concat(parts_train, axis=1)
     X_test_enc = pd.concat(parts_test, axis=1)
@@ -540,7 +563,12 @@ def safe_scale(
     """
     X_train = X_train.copy()
     X_test = X_test.copy()
-    report: dict = {"scaled_cols": 0, "zero_variance_dropped": []}
+    report: dict = {
+        "scaled_cols": 0, 
+        "zero_variance_dropped": [],
+        "scale_means": {},
+        "scale_stds": {}
+    }
 
     cols_to_scale = [c for c in X_train.columns if not c.startswith("Is_Massive_")]
 
@@ -558,6 +586,8 @@ def safe_scale(
             X_train[col] = (X_train[col] - mean) / std
             X_test[col] = (X_test[col] - mean) / std
             report["scaled_cols"] += 1
+            report["scale_means"][col] = mean
+            report["scale_stds"][col] = std
 
     return X_train, X_test, report
 
@@ -715,9 +745,122 @@ def run_full_eda(
     _progress(9, "Feature Importance Scan", "end")
 
     # ── Pack final outputs ───────────────────────────────────────────────────
+    eda_state = {
+        "drop_cols": trim_report["high_missing_cols"] + trim_report["near_constant_cols"] + trim_report["id_cols_removed"] + trim_report["leakage_cols_removed"],
+        "impute_medians": impute_report.get("median_values", {}),
+        "impute_means": impute_report.get("mean_values", {}),
+        "fs_dropped": fs_report["multicollinear_dropped"] + fs_report["weak_categorical_dropped"],
+        "outlier_upper": outlier_report.get("upper_bounds", {}),
+        "outlier_lower": outlier_report.get("lower_bounds", {}),
+        "massive_flags": outlier_report["massive_flags_created"],
+        "rare_categories": outlier_report.get("rare_categories", {}),
+        "log_transformed": outlier_report["log_transformed_features"],
+        "target_encoder": enc_report.get("target_encoder"),
+        "one_hot_encoder": enc_report.get("one_hot_encoder"),
+        "te_cols": enc_report.get("target_encoded", []),
+        "ohe_cols": enc_report.get("one_hot_encoded", []),
+        "scale_means": scale_report.get("scale_means", {}),
+        "scale_stds": scale_report.get("scale_stds", {}),
+        "scale_dropped": scale_report["zero_variance_dropped"],
+        "top_features": X_train.columns.tolist()
+    }
+    
+    results["eda_state"] = eda_state
     results["X_train"] = X_train
     results["X_test"] = X_test
     results["y_train"] = y_train
     results["y_test"] = y_test
 
     return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INFERENCE PIPELINE
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def apply_eda_pipeline(test_df: pd.DataFrame, state: dict) -> pd.DataFrame:
+    """
+    Apply the exactly saved EDA mathematical transformations to an unseen dataset.
+    Returns the fully transformed DataFrame ready for .predict().
+    """
+    df = test_df.copy()
+    
+    # 1. Basic Trim
+    df = df.drop(columns=[c for c in state["drop_cols"] if c in df.columns], errors="ignore")
+    
+    # 2. Imputation
+    for col in df.select_dtypes(["object", "category"]).columns:
+        df[col] = df[col].fillna("None")
+    for col, val in state["impute_medians"].items():
+        if col in df.columns:
+            df[col] = df[col].fillna(val)
+    for col, val in state["impute_means"].items():
+        if col in df.columns:
+            df[col] = df[col].fillna(val)
+            
+    # 3. Feature Selection Drops
+    df = df.drop(columns=[c for c in state["fs_dropped"] if c in df.columns], errors="ignore")
+    
+    # 4. Outliers & Skewness
+    for col, upper in state["outlier_upper"].items():
+        if col in df.columns:
+            flag_name = f"Is_Massive_{col}"
+            if flag_name in state["massive_flags"]:
+                df[flag_name] = (df[col] > upper).astype(int)
+            lower = state["outlier_lower"].get(col, -float('inf'))
+            df[col] = df[col].clip(lower=lower, upper=upper)
+            
+    for col, rare_list in state["rare_categories"].items():
+        if col in df.columns:
+            df[col] = df[col].replace(rare_list, "Other")
+            
+    for col in state["log_transformed"]:
+        if col in df.columns:
+            # Replicate np.log1p logic from training
+            if df[col].min() >= 0:
+                df[col] = np.log1p(df[col])
+                
+    # 5. Hybrid Encoding
+    parts = []
+    numeric_cols = df.select_dtypes(["int64", "float64"]).columns.tolist()
+    if numeric_cols:
+        parts.append(df[numeric_cols].reset_index(drop=True))
+        
+    if state["target_encoder"] is not None and state["te_cols"]:
+        te = state["target_encoder"]
+        # Filter te_cols that exist
+        valid_te_cols = [c for c in state["te_cols"] if c in df.columns]
+        if valid_te_cols:
+            transformed_te = pd.DataFrame(
+                te.transform(df[valid_te_cols]), columns=valid_te_cols
+            )
+            parts.append(transformed_te.reset_index(drop=True))
+            
+    if state["one_hot_encoder"] is not None and state["ohe_cols"]:
+        ohe = state["one_hot_encoder"]
+        valid_ohe_cols = [c for c in state["ohe_cols"] if c in df.columns]
+        if valid_ohe_cols:
+            ohe_feature_names = ohe.get_feature_names_out(valid_ohe_cols).tolist()
+            transformed_ohe = pd.DataFrame(
+                ohe.transform(df[valid_ohe_cols]), columns=ohe_feature_names
+            )
+            parts.append(transformed_ohe.reset_index(drop=True))
+            
+    if parts:
+        df = pd.concat(parts, axis=1)
+        
+    # 6. Scaling
+    df = df.drop(columns=[c for c in state["scale_dropped"] if c in df.columns], errors="ignore")
+    for col, mean in state["scale_means"].items():
+        if col in df.columns:
+            std = state["scale_stds"].get(col, 1.0)
+            if std > 0:
+                df[col] = (df[col] - mean) / std
+                
+    # 7. Final Feature Selection (Top N)
+    # Ensure missing columns are filled with 0 (e.g. OHE columns not present in test set)
+    for col in state["top_features"]:
+        if col not in df.columns:
+            df[col] = 0
+            
+    return df[state["top_features"]]
