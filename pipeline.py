@@ -205,13 +205,14 @@ def run_baseline_classification(
     """
     Train all classification models and return results ranked by the chosen metric.
 
-    Returns (results_dict, best_model_name, best_score).
+    Returns (results_dict, best_model_name, best_score, best_fitted_model).
     results_dict maps model_name → {accuracy, f1_weighted}.
     """
     models = _build_classification_models(use_class_weight)
     results = {}
     best_score = -1
     best_model_name = ""
+    best_fitted_model = None
 
     for idx, (name, model) in enumerate(models.items()):
         if progress_callback:
@@ -239,6 +240,7 @@ def run_baseline_classification(
             if score > best_score:
                 best_score = score
                 best_model_name = name
+                best_fitted_model = model
         except Exception as e:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ {name} failed: {e}\n")
             results[name] = {"Accuracy": 0.0, "F1 (weighted)": 0.0}
@@ -253,7 +255,11 @@ def run_baseline_classification(
             "Please check your data for issues (e.g., NaN values, incompatible dtypes)."
         )
 
-    return results, best_model_name, best_score
+    # Retrain best model on full (non-subsampled) training data if it was subsampled
+    if best_model_name in _SLOW_MODELS and len(X_train) > _SAMPLE_THRESHOLD:
+        best_fitted_model.fit(X_train, y_train)
+
+    return results, best_model_name, best_score, best_fitted_model
 
 
 def run_tuning_classification(
@@ -322,13 +328,14 @@ def run_baseline_regression(
     """
     Train all regression models and return results ranked by R².
 
-    Returns (results_dict, best_model_name, best_r2).
+    Returns (results_dict, best_model_name, best_r2, best_fitted_model).
     results_dict maps model_name → {R², MAE, RMSE}.
     """
     models = _build_regression_models()
     results = {}
     best_r2 = -float("inf")
     best_model_name = ""
+    best_fitted_model = None
 
     for idx, (name, model) in enumerate(models.items()):
         if progress_callback:
@@ -359,6 +366,7 @@ def run_baseline_regression(
             if r2 > best_r2:
                 best_r2 = r2
                 best_model_name = name
+                best_fitted_model = model
         except Exception as e:
             print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ {name} failed: {e}\n")
             results[name] = {"R²": 0.0, "MAE": 0.0, "RMSE": 0.0}
@@ -373,7 +381,11 @@ def run_baseline_regression(
             "Please check your data for issues (e.g., NaN values, incompatible dtypes)."
         )
 
-    return results, best_model_name, best_r2
+    # Retrain best model on full (non-subsampled) training data if it was subsampled
+    if best_model_name in _SLOW_MODELS and len(X_train) > _SAMPLE_THRESHOLD:
+        best_fitted_model.fit(X_train, y_train)
+
+    return results, best_model_name, best_r2, best_fitted_model
 
 
 def run_tuning_regression(

@@ -359,7 +359,7 @@ if "app_done" not in st.session_state:
         use_cw  = metric_info.get("use_class_weight", False)
         try:
             with contextlib.redirect_stdout(StreamlitCapture(mdl_log_slot)):
-                mdl_results, best_model, best_score = run_baseline_classification(
+                mdl_results, best_model, best_score, baseline_model = run_baseline_classification(
                     X_train, X_test, y_train, y_test, scoring_metric=scoring, use_class_weight=use_cw, progress_callback=_mdl_prog
                 )
         except RuntimeError as e:
@@ -368,11 +368,12 @@ if "app_done" not in st.session_state:
             st.error(f"❌ Model training failed: {e}")
             st.stop()
         sort_col = "Accuracy" if scoring == "accuracy" else "F1 (weighted)"
+        baseline_metrics = mdl_results[best_model]  # {"Accuracy": ..., "F1 (weighted)": ...}
     else:
         scoring = "r2"
         try:
             with contextlib.redirect_stdout(StreamlitCapture(mdl_log_slot)):
-                mdl_results, best_model, best_score = run_baseline_regression(
+                mdl_results, best_model, best_score, baseline_model = run_baseline_regression(
                     X_train, X_test, y_train, y_test, progress_callback=_mdl_prog
                 )
         except RuntimeError as e:
@@ -381,6 +382,7 @@ if "app_done" not in st.session_state:
             st.error(f"❌ Model training failed: {e}")
             st.stop()
         sort_col = "R²"
+        baseline_metrics = mdl_results[best_model]  # {"R²": ..., "MAE": ..., "RMSE": ...}
 
     # Models finished. Clear progress and logs to make room for final UI
     mdl_prog_slot.empty()
@@ -411,37 +413,47 @@ if "app_done" not in st.session_state:
     if task_type == "classification":
         try:
             with contextlib.redirect_stdout(StreamlitCapture(tune_log_slot)):
-                final_acc, final_f1, best_params, cls_report, final_model = run_tuning_classification(
+                final_acc, final_f1, best_params, cls_report, tuned_model = run_tuning_classification(
                     X_train, X_test, y_train, y_test, best_model, cv_folds, scoring_metric=scoring, use_class_weight=use_cw
                 )
             tuned_score = final_acc if scoring == "accuracy" else final_f1
-            final_metrics = {"Accuracy": final_acc, "F1 (weighted)": final_f1}
+            tuned_metrics = {"Accuracy": final_acc, "F1 (weighted)": final_f1}
         except Exception as e:
             tune_prog_slot.empty()
             tune_log_slot.empty()
             st.warning(f"⚠️ Hyperparameter tuning failed: {e}. Using baseline model instead.")
             tuned_score = best_score
             best_params = {}
-            final_model = None
-            final_metrics = {"Accuracy": best_score, "F1 (weighted)": best_score}
+            tuned_model = None
+            tuned_metrics = baseline_metrics
     else:
         try:
             with contextlib.redirect_stdout(StreamlitCapture(tune_log_slot)):
-                final_r2, final_mae, final_rmse, best_params, final_model = run_tuning_regression(
+                final_r2, final_mae, final_rmse, best_params, tuned_model = run_tuning_regression(
                     X_train, X_test, y_train, y_test, best_model, cv_folds
                 )
             tuned_score = final_r2
-            final_metrics = {"R²": final_r2, "MAE": final_mae, "RMSE": final_rmse}
+            tuned_metrics = {"R²": final_r2, "MAE": final_mae, "RMSE": final_rmse}
         except Exception as e:
             tune_prog_slot.empty()
             tune_log_slot.empty()
             st.warning(f"⚠️ Hyperparameter tuning failed: {e}. Using baseline model instead.")
             tuned_score = best_score
             best_params = {}
-            final_model = None
-            final_metrics = {"R²": best_score, "MAE": 0.0, "RMSE": 0.0}
+            tuned_model = None
+            tuned_metrics = baseline_metrics
         
     improved = tuned_score > best_score
+    
+    # Pick the better model and its metrics
+    if improved:
+        final_model = tuned_model
+        final_metrics = tuned_metrics
+    else:
+        # Tuning didn't help — use the baseline model and its original metrics
+        final_model = baseline_model
+        final_metrics = baseline_metrics
+        best_params = {}
     
     tune_prog_slot.empty()
     tune_log_slot.empty()
