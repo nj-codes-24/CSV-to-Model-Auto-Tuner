@@ -711,72 +711,70 @@ if "app_done" in st.session_state:
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    st.markdown("---")
-    st.subheader("🚀 Kaggle Inference")
-    st.write("Upload an unseen test dataset (without the target column) to generate predictions.")
-    test_file = st.file_uploader("Upload test.csv", type=["csv"], key="kaggle_test")
-    if test_file is not None:
-        try:
-            test_raw = pd.read_csv(test_file)
-            test_ids = None
-            first_col = test_raw.columns[0]
-            if "id" in first_col.lower():
-                test_ids = test_raw[[first_col]].copy()
-                
-            test_transformed = apply_eda_pipeline(test_raw, st.session_state.app_eda_state)
-            preds = st.session_state.app_final_model.predict(test_transformed)
-            if st.session_state.app_target_log:
-                preds = np.expm1(preds)
-                
-            pred_df = pd.DataFrame({st.session_state.app_target: preds})
-            if test_ids is not None:
-                pred_df = pd.concat([test_ids, pred_df], axis=1)
-                
-            pred_buf = io.BytesIO()
-            pred_df.to_csv(pred_buf, index=False)
-            
-            st.success("Predictions generated successfully!")
+    with st.container(border=True):
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            X_all = pd.concat([st.session_state.app_X_train, st.session_state.app_X_test], axis=0)
+            y_all = pd.concat([st.session_state.app_y_train, st.session_state.app_y_test], axis=0)
+            cleaned = X_all.copy()
+            cleaned[st.session_state.app_target] = y_all
+            csv_buf = io.BytesIO()
+            cleaned.to_csv(csv_buf, index=False)
             st.download_button(
-                "⬇️  Download Predictions (CSV)",
-                data=pred_buf.getvalue(),
-                file_name="predictions.csv",
+                "⬇️  Download Cleaned Dataset (CSV)",
+                data=csv_buf.getvalue(),
+                file_name="cleaned_dataset.csv",
                 mime="text/csv",
                 use_container_width=True,
-                type="primary"
             )
-        except Exception as e:
-            st.error(f"Error generating predictions: {e}")
+            st.caption(f"{cleaned.shape[0]:,} rows × {cleaned.shape[1]} cols")
 
-    st.markdown("---")
-    
-    dl1, dl2 = st.columns(2)
-    with dl1:
-        X_all = pd.concat([st.session_state.app_X_train, st.session_state.app_X_test], axis=0)
-        y_all = pd.concat([st.session_state.app_y_train, st.session_state.app_y_test], axis=0)
-        cleaned = X_all.copy()
-        cleaned[st.session_state.app_target] = y_all
-        csv_buf = io.BytesIO()
-        cleaned.to_csv(csv_buf, index=False)
-        st.download_button(
-            "⬇️  Download Cleaned Dataset (CSV)",
-            data=csv_buf.getvalue(),
-            file_name="cleaned_dataset.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-        st.caption(f"{cleaned.shape[0]:,} rows × {cleaned.shape[1]} cols")
+        with dl2:
+            if st.session_state.app_final_model is not None:
+                mdl_buf = io.BytesIO()
+                joblib.dump(st.session_state.app_final_model, mdl_buf)
+                st.download_button(
+                    "⬇️  Download Trained Model (.pkl)",
+                    data=mdl_buf.getvalue(),
+                    file_name=f"tuned_{best_overall.replace(' ', '_').lower()}.pkl",
+                    mime="application/octet-stream",
+                    use_container_width=True,
+                )
+                st.caption(f"Model: {best_overall}")
+            else:
+                st.info("Model download unavailable — tuning failed. Re-run with different parameters.")
 
-    with dl2:
-        if st.session_state.app_final_model is not None:
-            mdl_buf = io.BytesIO()
-            joblib.dump(st.session_state.app_final_model, mdl_buf)
-            st.download_button(
-                "⬇️  Download Trained Model (.pkl)",
-                data=mdl_buf.getvalue(),
-                file_name=f"tuned_{best_overall.replace(' ', '_').lower()}.pkl",
-                mime="application/octet-stream",
-                use_container_width=True,
-            )
-            st.caption(f"Model: {best_overall}")
-        else:
-            st.info("Model download unavailable — tuning failed. Re-run with different parameters.")
+        st.markdown("---")
+        st.write("**If you have test data which you want to make predictions on, upload it below:**")
+        test_file = st.file_uploader("Upload test.csv", type=["csv"], key="kaggle_test", label_visibility="collapsed")
+        if test_file is not None:
+            try:
+                test_raw = pd.read_csv(test_file)
+                test_ids = None
+                first_col = test_raw.columns[0]
+                if "id" in first_col.lower():
+                    test_ids = test_raw[[first_col]].copy()
+                    
+                test_transformed = apply_eda_pipeline(test_raw, st.session_state.app_eda_state)
+                preds = st.session_state.app_final_model.predict(test_transformed)
+                if st.session_state.app_target_log:
+                    preds = np.expm1(preds)
+                    
+                pred_df = pd.DataFrame({st.session_state.app_target: preds})
+                if test_ids is not None:
+                    pred_df = pd.concat([test_ids, pred_df], axis=1)
+                    
+                pred_buf = io.BytesIO()
+                pred_df.to_csv(pred_buf, index=False)
+                
+                st.success("Predictions generated successfully!")
+                st.download_button(
+                    "⬇️  Download Predictions (CSV)",
+                    data=pred_buf.getvalue(),
+                    file_name="predictions.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                    type="primary"
+                )
+            except Exception as e:
+                st.error(f"Error generating predictions: {e}")

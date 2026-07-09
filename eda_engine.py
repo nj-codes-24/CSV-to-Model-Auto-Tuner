@@ -251,8 +251,6 @@ def smart_impute(X_train: pd.DataFrame, X_test: pd.DataFrame) -> tuple[pd.DataFr
 
     # Numeric
     for col in X_train.select_dtypes(["int64", "float64"]).columns:
-        if X_train[col].isnull().sum() == 0 and X_test[col].isnull().sum() == 0:
-            continue
         # Guard: entirely NaN column — skew() and mean() would return NaN
         if X_train[col].isnull().all():
             X_train[col] = X_train[col].fillna(0)
