@@ -750,10 +750,12 @@ if "app_done" in st.session_state:
         if test_file is not None:
             try:
                 test_raw = pd.read_csv(test_file)
-                test_ids = None
-                first_col = test_raw.columns[0]
-                if "id" in first_col.lower():
-                    test_ids = test_raw[[first_col]].copy()
+                
+                id_cols = st.multiselect(
+                    "Select ID columns to include in your output (e.g. PassengerId)",
+                    options=test_raw.columns.tolist(),
+                    default=[c for c in test_raw.columns if "id" in c.lower()]
+                )
                     
                 test_transformed = apply_eda_pipeline(test_raw, st.session_state.app_eda_state)
                 preds = st.session_state.app_final_model.predict(test_transformed)
@@ -761,8 +763,8 @@ if "app_done" in st.session_state:
                     preds = np.expm1(preds)
                     
                 pred_df = pd.DataFrame({st.session_state.app_target: preds})
-                if test_ids is not None:
-                    pred_df = pd.concat([test_ids, pred_df], axis=1)
+                if id_cols:
+                    pred_df = pd.concat([test_raw[id_cols], pred_df], axis=1)
                     
                 pred_buf = io.BytesIO()
                 pred_df.to_csv(pred_buf, index=False)
