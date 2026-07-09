@@ -14,6 +14,7 @@ from eda_engine import (
     basic_trim, detect_task_type, recommend_metric,
     smart_impute, feature_selection, handle_outliers_and_skew,
     hybrid_encode, safe_scale, rf_importance_scan, apply_eda_pipeline,
+    smart_feature_engineering
 )
 from pipeline import (
     run_baseline_classification, run_tuning_classification,
@@ -301,6 +302,13 @@ if "app_done" not in st.session_state:
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
     log(f"**Split** — Train: {X_train.shape[0]:,} | Test: {X_test.shape[0]:,}")
     
+    # 3.5 Feature Engineering
+    X_train, X_test, eng_state = smart_feature_engineering(X_train, X_test)
+    log("**Smart Feature Engineering**")
+    if eng_state["datetime_cols"]: sublog(f"Extracted datetime features from {len(eng_state['datetime_cols'])} cols")
+    if eng_state["split_cols"]: sublog(f"Delimiter-split {len(eng_state['split_cols'])} structured cols")
+    if not eng_state["datetime_cols"] and not eng_state["split_cols"]: sublog("No complex text structures found")
+    
     # 4. Imputation
     X_train, X_test, imp = smart_impute(X_train, X_test)
     log("**Imputation** (train-only stats)")
@@ -584,7 +592,8 @@ if "app_done" not in st.session_state:
         "scale_means": sc.get("scale_means", {}),
         "scale_stds": sc.get("scale_stds", {}),
         "scale_dropped": sc["zero_variance_dropped"],
-        "top_features": top_features
+        "top_features": top_features,
+        "engineering_state": eng_state
     }
 
     st.session_state.update({
