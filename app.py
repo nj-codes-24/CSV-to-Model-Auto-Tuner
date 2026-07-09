@@ -195,18 +195,7 @@ if st.session_state.app_phase == "setup":
                         "Leakage columns",
                         [c for c in df.columns if c != target_var],
                     )
-                    enable_ensembling = st.checkbox("Enable Advanced Ensembling (Slower)", value=False)
-
-            st.markdown("")
-            if st.button("⚡  Launch Engine", use_container_width=True, type="primary"):
-                st.session_state.app_phase    = "results"
-                st.session_state.app_df       = df.copy()
-                st.session_state.app_target   = target_var
-                st.session_state.app_tsize    = test_size
-                st.session_state.app_cv       = cv_folds
-                st.session_state.app_topn     = top_n
                 st.session_state.app_leakage  = leakage_cols if leakage_cols else None
-                st.session_state.app_ensembling = enable_ensembling
                 if "app_done" in st.session_state:
                     del st.session_state["app_done"] # Force re-run if launched again
                 st.rerun()
@@ -219,7 +208,7 @@ if st.session_state.app_phase == "setup":
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Guard: required session state keys must exist for Phase 2
-_required_keys = ["app_df", "app_target", "app_tsize", "app_cv", "app_topn", "app_leakage", "app_ensembling"]
+_required_keys = ["app_df", "app_target", "app_tsize", "app_cv", "app_topn", "app_leakage"]
 if not all(k in st.session_state for k in _required_keys):
     st.session_state.app_phase = "setup"
     st.rerun()
@@ -409,106 +398,138 @@ if "app_done" not in st.session_state:
         st.bar_chart(data=res_df, x="Algorithm", y=sort_col)
 
     # ── Stage 3: Tuning ──
-    st.header("Stage 3: Hyperparameter Tuning")
+    st.header("Stage 3: Hyperparameter Tuning (Top 3)")
     
     tune_prog_slot = st.empty()
     tune_log_slot = st.empty()
-    tune_prog = tune_prog_slot.progress(0, text=f"Hyperparameter tuning {best_model}...")
     
-    if task_type == "classification":
-        try:
-            with contextlib.redirect_stdout(StreamlitCapture(tune_log_slot)):
-                final_acc, final_f1, best_params, cls_report, tuned_model = run_tuning_classification(
-                    X_train, X_test, y_train, y_test, best_model, cv_folds, scoring_metric=scoring, use_class_weight=use_cw
-                )
-            tuned_score = final_acc if scoring == "accuracy" else final_f1
-            tuned_metrics = {"Accuracy": final_acc, "F1 (weighted)": final_f1}
-        except Exception as e:
-            tune_prog_slot.empty()
-            tune_log_slot.empty()
-            st.warning(f"⚠️ Hyperparameter tuning failed: {e}. Using baseline model instead.")
-            tuned_score = best_score
-            best_params = {}
-            tuned_model = None
-            tuned_metrics = baseline_metrics
-    else:
-        try:
-            with contextlib.redirect_stdout(StreamlitCapture(tune_log_slot)):
-                final_r2, final_mae, final_rmse, best_params, tuned_model = run_tuning_regression(
-                    X_train, X_test, y_train, y_test, best_model, cv_folds
-                )
-            tuned_score = final_r2
-            tuned_metrics = {"R²": final_r2, "MAE": final_mae, "RMSE": final_rmse}
-        except Exception as e:
-            tune_prog_slot.empty()
-            tune_log_slot.empty()
-            st.warning(f"⚠️ Hyperparameter tuning failed: {e}. Using baseline model instead.")
-            tuned_score = best_score
-            best_params = {}
-            tuned_model = None
-            tuned_metrics = baseline_metrics
+    # Extract top 3 baseline models
+    from sklearn.base import clone
+    top_n = get_top_n_models(mdl_results, all_models, sort_col, n=3)
+    optimized_top_models = []
+    
+    best_tuned_score = -float('inf')
+    best_tuned_model = None
+    best_tuned_metrics = {}
+    best_tuned_params = {}
+    best_tuned_name = ""
+    
+    for idx, (m_name, m_unfitted) in enumerate(top_n):
+        tune_prog_slot.progress((idx) / len(top_n), text=f"Tuning {m_name} ({idx+1}/{len(top_n)})...")
+        b_score = mdl_results[m_name][sort_col]
         
-    improved = tuned_score > best_score
+        t_score = -float('inf')
+        t_model = None
+        t_metrics = {}
+        t_params = {}
+        
+        if task_type == "classification":
+            try:
+                with contextlib.redirect_stdout(StreamlitCapture(tune_log_slot)):
+                    final_acc, final_f1, b_p, cls_report, t_m = run_tuning_classification(
+                        X_train, X_test, y_train, y_test, m_name, cv_folds, scoring_metric=scoring, use_class_weight=use_cw
+                    )
+                t_score = final_acc if scoring == "accuracy" else final_f1
+                t_metrics = {"Accuracy": final_acc, "F1 (weighted)": final_f1}
+                t_model = t_m
+                t_params = b_p
+            except Exception as e:
+                with contextlib.redirect_stdout(StreamlitCapture(tune_log_slot)):
+                    print(f"⚠️ Tuning failed for {m_name}: {e}. Falling back to baseline.")
+        else:
+            try:
+                with contextlib.redirect_stdout(StreamlitCapture(tune_log_slot)):
+                    final_r2, final_mae, final_rmse, b_p, t_m = run_tuning_regression(
+                        X_train, X_test, y_train, y_test, m_name, cv_folds
+                    )
+                t_score = final_r2
+                t_metrics = {"R²": final_r2, "MAE": final_mae, "RMSE": final_rmse}
+                t_model = t_m
+                t_params = b_p
+            except Exception as e:
+                with contextlib.redirect_stdout(StreamlitCapture(tune_log_slot)):
+                    print(f"⚠️ Tuning failed for {m_name}: {e}. Falling back to baseline.")
+                    
+        # Decide whether tuning helped this specific model
+        if t_score > b_score and t_model is not None:
+            optimized_top_models.append((m_name, clone(t_model)))
+            if t_score > best_tuned_score:
+                best_tuned_score = t_score
+                best_tuned_model = t_model
+                best_tuned_metrics = t_metrics
+                best_tuned_params = t_params
+                best_tuned_name = m_name
+        else:
+            optimized_top_models.append((m_name, m_unfitted))
+            if b_score > best_tuned_score:
+                best_tuned_score = b_score
+                best_tuned_model = all_models[m_name]
+                best_tuned_metrics = mdl_results[m_name]
+                best_tuned_params = {}
+                best_tuned_name = m_name
+
+    improved = best_tuned_score > best_score
+    tuned_score = best_tuned_score
+    tuned_model = best_tuned_model
+    tuned_metrics = best_tuned_metrics
+    best_params = best_tuned_params
     
     tune_prog_slot.empty()
     tune_log_slot.empty()
 
     # ── Stage 4: Advanced Ensembling ──
+    st.header("Stage 4: Advanced Ensembling")
+    ens_prog_slot = st.empty()
+    ens_log_slot = st.empty()
+    
     ensemble_score = -float('inf')
     ensemble_model = None
     ensemble_metrics = {}
     ensemble_results = {}
     ensemble_improved = False
     
-    if st.session_state.app_ensembling:
-        st.header("Stage 4: Advanced Ensembling")
-        ens_prog_slot = st.empty()
-        ens_log_slot = st.empty()
-        
-        def _ens_prog(idx, total, name, status="end"):
-            if status == "start":
-                ens_prog_slot.progress(idx / total, text=f"⚙️ Building {name}...")
-            else:
-                ens_prog_slot.progress(idx / total, text=f"✅ {name} trained")
-
-        top_n = get_top_n_models(mdl_results, all_models, sort_col, n=3)
-        
-        if task_type == "classification":
-            with contextlib.redirect_stdout(StreamlitCapture(ens_log_slot)):
-                ensemble_results, best_ens_name, ensemble_score, ensemble_model = build_classification_ensembles(
-                    X_train, X_test, y_train, y_test, top_n, scoring_metric=scoring, progress_callback=_ens_prog
-                )
-            if best_ens_name:
-                ensemble_metrics = ensemble_results[best_ens_name]
+    def _ens_prog(idx, total, name, status="end"):
+        if status == "start":
+            ens_prog_slot.progress(idx / total, text=f"⚙️ Building {name}...")
         else:
-            with contextlib.redirect_stdout(StreamlitCapture(ens_log_slot)):
-                ensemble_results, best_ens_name, ensemble_score, ensemble_model = build_regression_ensembles(
-                    X_train, X_test, y_train, y_test, top_n, progress_callback=_ens_prog
-                )
-            if best_ens_name:
-                ensemble_metrics = ensemble_results[best_ens_name]
-                
-        if ensemble_score > max(best_score, tuned_score):
-            ensemble_improved = True
+            ens_prog_slot.progress(idx / total, text=f"✅ {name} trained")
             
-        ens_prog_slot.empty()
-        ens_log_slot.empty()
-        
-        # Show ensemble results
-        if ensemble_results:
-            ens_df = (
-                pd.DataFrame(ensemble_results).T
-                .reset_index().rename(columns={"index": "Ensemble"})
-                .sort_values(sort_col, ascending=False).reset_index(drop=True)
+    if task_type == "classification":
+        with contextlib.redirect_stdout(StreamlitCapture(ens_log_slot)):
+            ensemble_results, best_ens_name, ensemble_score, ensemble_model = build_classification_ensembles(
+                X_train, X_test, y_train, y_test, optimized_top_models, scoring_metric=scoring, progress_callback=_ens_prog
             )
-            col_ens_tbl, col_ens_cht = st.columns([1, 1])
-            with col_ens_tbl:
-                st.dataframe(
-                    ens_df.style.highlight_max(axis=0, subset=[sort_col], color="#1e3a5f"),
-                    use_container_width=True,
-                )
-            with col_ens_cht:
-                st.bar_chart(data=ens_df, x="Ensemble", y=sort_col)
+        if best_ens_name:
+            ensemble_metrics = ensemble_results[best_ens_name]
+    else:
+        with contextlib.redirect_stdout(StreamlitCapture(ens_log_slot)):
+            ensemble_results, best_ens_name, ensemble_score, ensemble_model = build_regression_ensembles(
+                X_train, X_test, y_train, y_test, optimized_top_models, progress_callback=_ens_prog
+            )
+        if best_ens_name:
+            ensemble_metrics = ensemble_results[best_ens_name]
+            
+    if ensemble_score > max(best_score, tuned_score):
+        ensemble_improved = True
+        
+    ens_prog_slot.empty()
+    ens_log_slot.empty()
+    
+    # Show ensemble results
+    if ensemble_results:
+        ens_df = (
+            pd.DataFrame(ensemble_results).T
+            .reset_index().rename(columns={"index": "Ensemble"})
+            .sort_values(sort_col, ascending=False).reset_index(drop=True)
+        )
+        col_ens_tbl, col_ens_cht = st.columns([1, 1])
+        with col_ens_tbl:
+            st.dataframe(
+                ens_df.style.highlight_max(axis=0, subset=[sort_col], color="#1e3a5f"),
+                use_container_width=True,
+            )
+        with col_ens_cht:
+            st.bar_chart(data=ens_df, x="Ensemble", y=sort_col)
 
     # ── Final Selection ──
     # Compare all three options: Baseline vs Tuned vs Ensemble
@@ -520,13 +541,13 @@ if "app_done" not in st.session_state:
     if improved and tuned_score > ensemble_score:
         final_model = tuned_model
         final_metrics = tuned_metrics
-        best_overall = best_model
+        best_overall = best_tuned_name
         best_params_final = best_params
     elif ensemble_improved:
         final_model = ensemble_model
         final_metrics = ensemble_metrics
         best_overall = best_ens_name
-        best_params_final = {"Ensemble": "True", "Top N Models": ", ".join([n for n, m in top_n])}
+        best_params_final = {"Ensemble": "True", "Top N Models": ", ".join([n for n, m in optimized_top_models])}
 
     # Save everything to session state
     st.session_state.update({
