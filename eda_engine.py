@@ -222,6 +222,96 @@ def basic_trim(df: pd.DataFrame, target_col: str,
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 2.5: FEATURE ENGINEERING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def smart_feature_engineering(X_train: pd.DataFrame, X_test: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """
+    Automatically extracts powerful features from object columns before imputation.
+    1. Datetime extraction (Year, Month, Day, DayOfWeek, Is_Weekend)
+    2. Smart delimiter splitting (for structured strings like 'A/15/P')
+    """
+    X_train = X_train.copy()
+    X_test = X_test.copy()
+    
+    state: dict = {
+        "datetime_cols": [],
+        "split_cols": {}, # {col: {'delimiter': delim, 'new_cols': [list]}}
+        "dropped_cols": []
+    }
+    
+    obj_cols = X_train.select_dtypes(["object", "string", "category"]).columns
+    
+    for col in obj_cols:
+        # Check for Datetime first (ignore purely numeric columns that got stringified)
+        if pd.to_numeric(X_train[col], errors='coerce').notna().mean() > 0.5:
+            continue
+            
+        parsed = pd.to_datetime(X_train[col], errors='coerce')
+        valid_ratio = parsed.notna().mean()
+        
+        if valid_ratio > 0.8:
+            # Extract features on train
+            X_train[f"{col}_Year"] = parsed.dt.year
+            X_train[f"{col}_Month"] = parsed.dt.month
+            X_train[f"{col}_Day"] = parsed.dt.day
+            X_train[f"{col}_DayOfWeek"] = parsed.dt.dayofweek
+            X_train[f"{col}_Is_Weekend"] = (parsed.dt.dayofweek >= 5).astype(int)
+            
+            # Extract features on test
+            parsed_test = pd.to_datetime(X_test[col], errors='coerce')
+            X_test[f"{col}_Year"] = parsed_test.dt.year
+            X_test[f"{col}_Month"] = parsed_test.dt.month
+            X_test[f"{col}_Day"] = parsed_test.dt.day
+            X_test[f"{col}_DayOfWeek"] = parsed_test.dt.dayofweek
+            X_test[f"{col}_Is_Weekend"] = (parsed_test.dt.dayofweek >= 5).astype(int)
+            
+            state["datetime_cols"].append(col)
+            state["dropped_cols"].append(col)
+            X_train = X_train.drop(columns=[col])
+            X_test = X_test.drop(columns=[col])
+            continue
+            
+        # Try Smart Delimiter Splitting
+        delimiters = ['/', '-', '_', '|']
+        best_delimiter = None
+        best_k = None
+        
+        for delim in delimiters:
+            counts = X_train[col].dropna().astype(str).str.count(delim)
+            if len(counts) > 0:
+                mode_vals = counts.mode()
+                if len(mode_vals) > 0:
+                    k = mode_vals[0]
+                    if k > 0 and (counts == k).mean() > 0.9:
+                        best_delimiter = delim
+                        best_k = k
+                        break
+        
+        if best_delimiter is not None:
+            new_cols = [f"{col}_part_{i+1}" for i in range(int(best_k) + 1)]
+            
+            # Split train
+            split_train = X_train[col].astype(str).str.split(best_delimiter, expand=True)
+            if split_train.shape[1] == len(new_cols):
+                split_train.columns = new_cols
+                X_train = pd.concat([X_train, split_train], axis=1)
+                
+                # Split test
+                split_test = X_test[col].astype(str).str.split(best_delimiter, expand=True)
+                for i, new_col in enumerate(new_cols):
+                    X_test[new_col] = split_test[i] if i < split_test.shape[1] else np.nan
+                
+                X_test = X_test.drop(columns=[col])
+                X_train = X_train.drop(columns=[col])
+                
+                state["split_cols"][col] = {
+                    "delimiter": best_delimiter,
+                    "new_cols": new_cols
+                }
+                state["dropped_cols"].append(col)
+                
+    return X_train, X_test, state
 # PHASE 3: IMPUTATION  (Phase 2 is train/test split — done in the orchestrator)
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -726,6 +816,12 @@ def run_full_eda(
     }
     _progress(3, "Train/Test Split", "end")
 
+    # ── Phase 2.5: Feature Engineering ─────────────────────────────────────────
+    _progress(3.5, "Feature Engineering")
+    X_train, X_test, eng_state = smart_feature_engineering(X_train, X_test)
+    results["engineering_state"] = eng_state
+    _progress(3.5, "Feature Engineering", "end")
+
     # ── Phase 3: Imputation ──────────────────────────────────────────────────
     _progress(4, "Imputation")
     X_train, X_test, impute_report = smart_impute(X_train, X_test)
@@ -787,7 +883,8 @@ def run_full_eda(
         "scale_means": scale_report.get("scale_means", {}),
         "scale_stds": scale_report.get("scale_stds", {}),
         "scale_dropped": scale_report["zero_variance_dropped"],
-        "top_features": X_train.columns.tolist()
+        "top_features": X_train.columns.tolist(),
+        "engineering_state": eng_state
     }
     
     results["eda_state"] = eda_state
@@ -812,6 +909,32 @@ def apply_eda_pipeline(test_df: pd.DataFrame, state: dict) -> pd.DataFrame:
     
     # 1. Basic Trim
     df = df.drop(columns=[c for c in state["drop_cols"] if c in df.columns], errors="ignore")
+    
+    # 1.5 Feature Engineering
+    if "engineering_state" in state:
+        eng_state = state["engineering_state"]
+        
+        # Datetime extraction
+        for col in eng_state.get("datetime_cols", []):
+            if col in df.columns:
+                parsed = pd.to_datetime(df[col], errors='coerce')
+                df[f"{col}_Year"] = parsed.dt.year
+                df[f"{col}_Month"] = parsed.dt.month
+                df[f"{col}_Day"] = parsed.dt.day
+                df[f"{col}_DayOfWeek"] = parsed.dt.dayofweek
+                df[f"{col}_Is_Weekend"] = (parsed.dt.dayofweek >= 5).astype(int)
+                
+        # Smart delimiter splitting
+        for col, split_info in eng_state.get("split_cols", {}).items():
+            if col in df.columns:
+                delim = split_info["delimiter"]
+                new_cols = split_info["new_cols"]
+                split_df = df[col].astype(str).str.split(delim, expand=True)
+                for i, new_col in enumerate(new_cols):
+                    df[new_col] = split_df[i] if i < split_df.shape[1] else np.nan
+                    
+        # Drop original feature-engineered columns
+        df = df.drop(columns=[c for c in eng_state.get("dropped_cols", []) if c in df.columns], errors="ignore")
     
     # 2. Imputation
     for col in df.select_dtypes(["object", "category"]).columns:
