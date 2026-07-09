@@ -146,14 +146,40 @@ if st.session_state.app_phase == "setup":
             fk = f"{uploaded.name}_{uploaded.size}"
             if st.session_state.get("app_fkey") != fk:
                 uploaded.seek(0)
-                st.session_state.app_setup_df = pd.read_csv(uploaded)
+                try:
+                    st.session_state.app_setup_df = pd.read_csv(uploaded)
+                except Exception as e:
+                    st.error(f"❌ Failed to read CSV: {e}")
+                    st.info("Please ensure the file is a valid CSV with proper encoding (UTF-8 recommended).")
+                    st.stop()
                 st.session_state.app_fkey = fk
 
             df = st.session_state.app_setup_df
+
+            # Validate: DataFrame must have at least 2 rows
+            if len(df) < 2:
+                st.error("❌ Dataset must have at least 2 rows. Please upload a larger dataset.")
+                st.stop()
+
+            # Validate: DataFrame must have at least 2 columns (1 target + 1 feature)
+            if df.shape[1] < 2:
+                st.error("❌ Dataset must have at least 2 columns (1 target + 1 feature).")
+                st.stop()
+
             st.caption(f"✅  **{uploaded.name}** — {df.shape[0]:,} rows × {df.shape[1]} columns")
             st.dataframe(df.head(3), use_container_width=True, height=145)
 
             target_var = st.selectbox("🎯  Target variable", df.columns.tolist())
+
+            # Validate: target column must not be entirely NaN
+            if df[target_var].isnull().all():
+                st.error(f"❌ Target column `{target_var}` is entirely empty (all NaN). Please select a different target.")
+                st.stop()
+
+            # Warn if target has >50% missing
+            target_missing_pct = df[target_var].isnull().mean()
+            if target_missing_pct > 0.5:
+                st.warning(f"⚠️ Target column `{target_var}` is {target_missing_pct:.0%} missing. Results may be unreliable.")
 
             with st.expander("⚙️  Advanced Parameters"):
                 p1, p2 = st.columns(2)
@@ -187,6 +213,12 @@ if st.session_state.app_phase == "setup":
 # ██  PHASE 2 — EXECUTION & RESULTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Guard: required session state keys must exist for Phase 2
+_required_keys = ["app_df", "app_target", "app_tsize", "app_cv", "app_topn", "app_leakage"]
+if not all(k in st.session_state for k in _required_keys):
+    st.session_state.app_phase = "setup"
+    st.rerun()
+
 # Add the Back arrow button at the very top left
 col_back, _ = st.columns([1, 8])
 with col_back:
@@ -206,6 +238,12 @@ cv_folds   = st.session_state.app_cv
 top_n      = st.session_state.app_topn
 leakage_cols = st.session_state.app_leakage
 
+# Drop rows where target is NaN before any processing
+df = df.dropna(subset=[target_var])
+if len(df) < 2:
+    st.error("❌ After removing rows with missing target values, fewer than 2 rows remain.")
+    st.stop()
+
 # ── RUN PIPELINE (First Pass) ──
 if "app_done" not in st.session_state:
     
@@ -213,20 +251,26 @@ if "app_done" not in st.session_state:
     st.header("Stage 1: EDA")
     eda_log_slot = st.empty()
     
-    eda_log = ""
+    # Use session-state-based log instead of fragile module-level global
+    if "_eda_log_lines" not in st.session_state:
+        st.session_state._eda_log_lines = []
+    st.session_state._eda_log_lines = []
+
     def log(msg):
-        global eda_log
-        eda_log += f"- {msg}\n"
-        eda_log_slot.markdown(eda_log)
+        st.session_state._eda_log_lines.append(f"- {msg}")
+        eda_log_slot.markdown("\n".join(st.session_state._eda_log_lines))
     def sublog(msg):
-        global eda_log
-        eda_log += f"  - {msg}\n"
-        eda_log_slot.markdown(eda_log)
+        st.session_state._eda_log_lines.append(f"  - {msg}")
+        eda_log_slot.markdown("\n".join(st.session_state._eda_log_lines))
 
     log(f"**Dataset loaded** — {df.shape[0]:,} rows × {df.shape[1]} columns")
     
     # 1. Cleaning
-    df_clean, trim = basic_trim(df, target_var, leakage_cols)
+    try:
+        df_clean, trim = basic_trim(df, target_var, leakage_cols)
+    except ValueError as e:
+        st.error(f"❌ Data cleaning failed: {e}")
+        st.stop()
     log("**Cleaning**")
     if trim["duplicates_removed"]: sublog(f"Removed {trim['duplicates_removed']} duplicate rows")
     if trim["high_missing_cols"]: sublog(f"Dropped {len(trim['high_missing_cols'])} cols (>50% missing): `{', '.join(trim['high_missing_cols'])}`")
@@ -247,6 +291,13 @@ if "app_done" not in st.session_state:
     if task_type == "classification" and y.dtype == "object":
         label_map = {lb: i for i, lb in enumerate(sorted(y.unique()))}
         y = y.map(label_map)
+
+    # Guard: ensure enough samples for train/test split
+    min_samples = max(int(1 / test_size) + 1, 4)  # At least 4 samples
+    if len(X) < min_samples:
+        st.error(f"❌ Not enough samples ({len(X)}) for a {test_size:.0%} train/test split. Need at least {min_samples}.")
+        st.stop()
+
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size, random_state=42)
     log(f"**Split** — Train: {X_train.shape[0]:,} | Test: {X_test.shape[0]:,}")
     
@@ -306,17 +357,29 @@ if "app_done" not in st.session_state:
     if task_type == "classification":
         scoring = metric_info["primary_metric"]
         use_cw  = metric_info.get("use_class_weight", False)
-        with contextlib.redirect_stdout(StreamlitCapture(mdl_log_slot)):
-            mdl_results, best_model, best_score = run_baseline_classification(
-                X_train, X_test, y_train, y_test, scoring_metric=scoring, use_class_weight=use_cw, progress_callback=_mdl_prog
-            )
+        try:
+            with contextlib.redirect_stdout(StreamlitCapture(mdl_log_slot)):
+                mdl_results, best_model, best_score = run_baseline_classification(
+                    X_train, X_test, y_train, y_test, scoring_metric=scoring, use_class_weight=use_cw, progress_callback=_mdl_prog
+                )
+        except RuntimeError as e:
+            mdl_prog_slot.empty()
+            mdl_log_slot.empty()
+            st.error(f"❌ Model training failed: {e}")
+            st.stop()
         sort_col = "Accuracy" if scoring == "accuracy" else "F1 (weighted)"
     else:
         scoring = "r2"
-        with contextlib.redirect_stdout(StreamlitCapture(mdl_log_slot)):
-            mdl_results, best_model, best_score = run_baseline_regression(
-                X_train, X_test, y_train, y_test, progress_callback=_mdl_prog
-            )
+        try:
+            with contextlib.redirect_stdout(StreamlitCapture(mdl_log_slot)):
+                mdl_results, best_model, best_score = run_baseline_regression(
+                    X_train, X_test, y_train, y_test, progress_callback=_mdl_prog
+                )
+        except RuntimeError as e:
+            mdl_prog_slot.empty()
+            mdl_log_slot.empty()
+            st.error(f"❌ Model training failed: {e}")
+            st.stop()
         sort_col = "R²"
 
     # Models finished. Clear progress and logs to make room for final UI
@@ -346,19 +409,37 @@ if "app_done" not in st.session_state:
     tune_prog = tune_prog_slot.progress(0, text=f"Hyperparameter tuning {best_model}...")
     
     if task_type == "classification":
-        with contextlib.redirect_stdout(StreamlitCapture(tune_log_slot)):
-            final_acc, final_f1, best_params, cls_report, final_model = run_tuning_classification(
-                X_train, X_test, y_train, y_test, best_model, cv_folds, scoring_metric=scoring, use_class_weight=use_cw
-            )
-        tuned_score = final_acc if scoring == "accuracy" else final_f1
-        final_metrics = {"Accuracy": final_acc, "F1 (weighted)": final_f1}
+        try:
+            with contextlib.redirect_stdout(StreamlitCapture(tune_log_slot)):
+                final_acc, final_f1, best_params, cls_report, final_model = run_tuning_classification(
+                    X_train, X_test, y_train, y_test, best_model, cv_folds, scoring_metric=scoring, use_class_weight=use_cw
+                )
+            tuned_score = final_acc if scoring == "accuracy" else final_f1
+            final_metrics = {"Accuracy": final_acc, "F1 (weighted)": final_f1}
+        except Exception as e:
+            tune_prog_slot.empty()
+            tune_log_slot.empty()
+            st.warning(f"⚠️ Hyperparameter tuning failed: {e}. Using baseline model instead.")
+            tuned_score = best_score
+            best_params = {}
+            final_model = None
+            final_metrics = {"Accuracy": best_score, "F1 (weighted)": best_score}
     else:
-        with contextlib.redirect_stdout(StreamlitCapture(tune_log_slot)):
-            final_r2, final_mae, final_rmse, best_params, final_model = run_tuning_regression(
-                X_train, X_test, y_train, y_test, best_model, cv_folds
-            )
-        tuned_score = final_r2
-        final_metrics = {"R²": final_r2, "MAE": final_mae, "RMSE": final_rmse}
+        try:
+            with contextlib.redirect_stdout(StreamlitCapture(tune_log_slot)):
+                final_r2, final_mae, final_rmse, best_params, final_model = run_tuning_regression(
+                    X_train, X_test, y_train, y_test, best_model, cv_folds
+                )
+            tuned_score = final_r2
+            final_metrics = {"R²": final_r2, "MAE": final_mae, "RMSE": final_rmse}
+        except Exception as e:
+            tune_prog_slot.empty()
+            tune_log_slot.empty()
+            st.warning(f"⚠️ Hyperparameter tuning failed: {e}. Using baseline model instead.")
+            tuned_score = best_score
+            best_params = {}
+            final_model = None
+            final_metrics = {"R²": best_score, "MAE": 0.0, "RMSE": 0.0}
         
     improved = tuned_score > best_score
     
@@ -367,7 +448,7 @@ if "app_done" not in st.session_state:
 
     # Save everything to session state
     st.session_state.update({
-        "app_eda_log":       eda_log,
+        "app_eda_log":       "\n".join(st.session_state._eda_log_lines),
         "app_task_type":     task_type,
         "app_metric_info":   metric_info,
         "app_mdl_results":   mdl_results,
@@ -473,13 +554,16 @@ if "app_done" in st.session_state:
         st.caption(f"{cleaned.shape[0]:,} rows × {cleaned.shape[1]} cols")
 
     with dl2:
-        mdl_buf = io.BytesIO()
-        joblib.dump(st.session_state.app_final_model, mdl_buf)
-        st.download_button(
-            "⬇️  Download Trained Model (.pkl)",
-            data=mdl_buf.getvalue(),
-            file_name=f"tuned_{best_model.replace(' ', '_').lower()}.pkl",
-            mime="application/octet-stream",
-            use_container_width=True,
-        )
-        st.caption(f"Model: {best_model}")
+        if st.session_state.app_final_model is not None:
+            mdl_buf = io.BytesIO()
+            joblib.dump(st.session_state.app_final_model, mdl_buf)
+            st.download_button(
+                "⬇️  Download Trained Model (.pkl)",
+                data=mdl_buf.getvalue(),
+                file_name=f"tuned_{best_model.replace(' ', '_').lower()}.pkl",
+                mime="application/octet-stream",
+                use_container_width=True,
+            )
+            st.caption(f"Model: {best_model}")
+        else:
+            st.info("Model download unavailable — tuning failed. Re-run with different parameters.")

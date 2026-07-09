@@ -149,6 +149,13 @@ def basic_trim(df: pd.DataFrame, target_col: str,
     df = df.drop_duplicates()
     report["duplicates_removed"] = before - len(df)
 
+    # Guard: zero rows after dedup (e.g. single-row CSV)
+    if len(df) == 0:
+        raise ValueError(
+            "Dataset has 0 rows after removing duplicates. "
+            "Please upload a dataset with at least 2 unique rows."
+        )
+
     # 2. Drop columns with >50% missing
     missing_pct = df.isnull().sum() / len(df)
     high_missing = missing_pct[missing_pct > 0.5].index.tolist()
@@ -201,6 +208,15 @@ def basic_trim(df: pd.DataFrame, target_col: str,
         report["leakage_cols_removed"] = existing
         df = df.drop(columns=existing)
 
+    # Guard: all feature columns removed, only target remains
+    feature_cols = [c for c in df.columns if c != target_col]
+    if len(feature_cols) == 0:
+        raise ValueError(
+            "All feature columns were removed during cleaning "
+            "(high-missing, near-constant, ID-like, or leakage). "
+            "The dataset has no usable features. Please review your data."
+        )
+
     report["final_shape"] = df.shape
     return df, report
 
@@ -231,7 +247,14 @@ def smart_impute(X_train: pd.DataFrame, X_test: pd.DataFrame) -> tuple[pd.DataFr
     for col in X_train.select_dtypes(["int64", "float64"]).columns:
         if X_train[col].isnull().sum() == 0 and X_test[col].isnull().sum() == 0:
             continue
-        if abs(X_train[col].skew()) > 1:
+        # Guard: entirely NaN column — skew() and mean() would return NaN
+        if X_train[col].isnull().all():
+            X_train[col] = X_train[col].fillna(0)
+            X_test[col] = X_test[col].fillna(0)
+            report["numeric_median"].append(col)
+            continue
+        skew_val = X_train[col].skew()
+        if pd.isna(skew_val) or abs(skew_val) > 1:
             val = X_train[col].median()
             report["numeric_median"].append(col)
         else:
@@ -272,9 +295,15 @@ def feature_selection(X_train: pd.DataFrame, X_test: pd.DataFrame,
             np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
         )
         # For each highly-correlated pair, drop the one less correlated to target
-        target_corr = X_train[numeric_cols].corrwith(
-            y_train.astype(float) if task_type == "regression" else y_train.astype("category").cat.codes
-        ).abs()
+        # Guard: drop NaN from y before computing correlation (NaN → cat.codes = -1)
+        y_clean = y_train.dropna()
+        X_aligned = X_train[numeric_cols].loc[y_clean.index]
+        try:
+            target_corr = X_aligned.corrwith(
+                y_clean.astype(float) if task_type == "regression" else y_clean.astype("category").cat.codes
+            ).abs().fillna(0)
+        except Exception:
+            target_corr = pd.Series(0, index=numeric_cols)
 
         to_drop = set()
         for i in range(len(upper.columns)):
@@ -299,23 +328,29 @@ def feature_selection(X_train: pd.DataFrame, X_test: pd.DataFrame,
         report["method"] = "ANOVA F-test"
         train_temp = pd.concat([X_train, y_train.rename("__target__")], axis=1)
         for col in cat_cols:
-            groups = [
-                train_temp.loc[train_temp[col] == cat, "__target__"].dropna()
-                for cat in train_temp[col].unique()
-            ]
-            groups = [g for g in groups if len(g) > 0]
-            if len(groups) > 1:
-                _, p_val = stats.f_oneway(*groups)
-                if p_val > 0.05:
-                    dead_weight.append(col)
+            try:
+                groups = [
+                    train_temp.loc[train_temp[col] == cat, "__target__"].dropna()
+                    for cat in train_temp[col].unique()
+                ]
+                groups = [g for g in groups if len(g) > 0]
+                if len(groups) > 1:
+                    _, p_val = stats.f_oneway(*groups)
+                    # Guard: p_val can be NaN if groups have zero variance
+                    if pd.notna(p_val) and p_val > 0.05:
+                        dead_weight.append(col)
+            except Exception:
+                pass  # Skip if ANOVA fails (e.g. constant groups)
     else:
         report["method"] = "Chi-Square test"
         train_temp = pd.concat([X_train, y_train.rename("__target__")], axis=1)
         for col in cat_cols:
             try:
                 contingency = pd.crosstab(train_temp[col], train_temp["__target__"])
+                if contingency.shape[0] < 2 or contingency.shape[1] < 2:
+                    continue  # Skip degenerate contingency tables
                 _, p_val, _, _ = stats.chi2_contingency(contingency)
-                if p_val > 0.05:
+                if pd.notna(p_val) and p_val > 0.05:
                     dead_weight.append(col)
             except Exception:
                 pass  # Skip if the contingency table is degenerate
@@ -370,6 +405,12 @@ def handle_outliers_and_skew(
         Q1 = X_train[col].quantile(0.25)
         Q3 = X_train[col].quantile(0.75)
         IQR = Q3 - Q1
+
+        # Guard: IQR == 0 means the feature has no spread (binary/constant).
+        # Clipping to [Q1, Q1] would collapse all values — skip instead.
+        if IQR == 0:
+            continue
+
         lower = Q1 - 1.5 * IQR
         upper = Q3 + 1.5 * IQR
 
@@ -398,7 +439,11 @@ def handle_outliers_and_skew(
         if not c.startswith("Is_Massive_")
     ]
     for col in numeric_cols_post:
-        if abs(X_train[col].skew()) > 1:
+        # Guard: skip zero-variance columns (all identical values)
+        if X_train[col].nunique() <= 1:
+            continue
+        skew_val = X_train[col].skew()
+        if pd.notna(skew_val) and abs(skew_val) > 1:
             # Ensure no negative values before log1p
             if X_train[col].min() >= 0 and X_test[col].min() >= 0:
                 X_train[col] = np.log1p(X_train[col])
@@ -407,7 +452,8 @@ def handle_outliers_and_skew(
 
     # 4. Log-transform target (regression only)
     if task_type == "regression" and log_transform_target:
-        if y_train.min() >= 0:
+        # Guard: check BOTH train and test for negative values
+        if y_train.min() >= 0 and y_test.min() >= 0:
             y_train = np.log1p(y_train)
             y_test = np.log1p(y_test)
             report["target_log_transformed"] = True
@@ -444,7 +490,10 @@ def hybrid_encode(
 
     # Target encoding
     if high_card:
-        te = TargetEncoder(target_type="continuous")
+        # Use appropriate target_type: "binary" for 2-class, "continuous" otherwise
+        n_classes = y_train.nunique()
+        te_target_type = "binary" if n_classes == 2 else "continuous"
+        te = TargetEncoder(target_type=te_target_type)
         te.fit(X_train[high_card], y_train)
         train_te = pd.DataFrame(
             te.transform(X_train[high_card]), columns=high_card
@@ -527,6 +576,11 @@ def rf_importance_scan(
 
     Returns (X_train_reduced, X_test_reduced, importance_df).
     """
+    # Guard: empty feature set — nothing to scan
+    if X_train.shape[1] == 0:
+        empty_imp = pd.DataFrame({"Feature": [], "Importance": []})
+        return X_train, X_test, empty_imp
+
     if task_type == "regression":
         rf = RandomForestRegressor(n_estimators=100, random_state=42, n_jobs=-1)
     else:

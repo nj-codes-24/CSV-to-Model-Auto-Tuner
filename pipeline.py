@@ -111,18 +111,20 @@ _SLOW_MODELS = {"KNN", "LinearSVC"}
 # REGRESSION REGISTRY
 # =============================================================================
 
-REGRESSION_MODELS = {
-    "Linear Regression": LinearRegression(n_jobs=-1),
-    "Ridge": Ridge(random_state=42),
-    "Lasso": Lasso(random_state=42, max_iter=5000),
-    "Decision Tree": DecisionTreeRegressor(random_state=42),
-    "Random Forest": RandomForestRegressor(n_jobs=-1, random_state=42),
-    "AdaBoost": AdaBoostRegressor(random_state=42),
-    "Gradient Boosting": GradientBoostingRegressor(random_state=42),
-    "XGBoost": XGBRegressor(
-        random_state=42, verbosity=0, n_jobs=-1, tree_method="hist",
-    ),
-}
+def _build_regression_models():
+    """Build the regression model registry with fresh instances each time."""
+    return {
+        "Linear Regression": LinearRegression(n_jobs=-1),
+        "Ridge": Ridge(random_state=42),
+        "Lasso": Lasso(random_state=42, max_iter=5000),
+        "Decision Tree": DecisionTreeRegressor(random_state=42),
+        "Random Forest": RandomForestRegressor(n_jobs=-1, random_state=42),
+        "AdaBoost": AdaBoostRegressor(random_state=42),
+        "Gradient Boosting": GradientBoostingRegressor(random_state=42),
+        "XGBoost": XGBRegressor(
+            random_state=42, verbosity=0, n_jobs=-1, tree_method="hist",
+        ),
+    }
 
 REGRESSION_PARAM_GRIDS = {
     "Linear Regression": {},  # No hyperparameters
@@ -166,8 +168,15 @@ def _maybe_subsample(X_train, y_train, model_name: str):
     if model_name in _SLOW_MODELS and n > _SAMPLE_THRESHOLD:
         idx = np.random.RandomState(42).choice(n, size=_SLOW_MODEL_SAMPLE, replace=False)
         if isinstance(X_train, pd.DataFrame):
-            return X_train.iloc[idx], y_train.iloc[idx]
-        return X_train[idx], y_train[idx]
+            X_sub = X_train.iloc[idx]
+        else:
+            X_sub = X_train[idx]
+        # Guard: handle both pandas Series and numpy arrays for y_train
+        if isinstance(y_train, pd.Series):
+            y_sub = y_train.iloc[idx]
+        else:
+            y_sub = y_train[idx]
+        return X_sub, y_sub
     return X_train, y_train
 
 
@@ -210,28 +219,39 @@ def run_baseline_classification(
 
         print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚙️ Initializing {name}...")
 
-        X_tr, y_tr = _maybe_subsample(X_train, y_train, name)
-        if len(X_tr) < len(X_train):
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Subsampling to {len(X_tr):,} rows...")
+        try:
+            X_tr, y_tr = _maybe_subsample(X_train, y_train, name)
+            if len(X_tr) < len(X_train):
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Subsampling to {len(X_tr):,} rows...")
 
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 Fitting model...")
-        model.fit(X_tr, y_tr)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 Fitting model...")
+            model.fit(X_tr, y_tr)
 
-        y_pred = model.predict(X_test)
-        acc = accuracy_score(y_test, y_pred)
-        f1 = f1_score(y_test, y_pred, average="weighted")
+            y_pred = model.predict(X_test)
+            acc = accuracy_score(y_test, y_pred)
+            f1 = f1_score(y_test, y_pred, average="weighted")
 
-        results[name] = {"Accuracy": round(acc, 4), "F1 (weighted)": round(f1, 4)}
+            results[name] = {"Accuracy": round(acc, 4), "F1 (weighted)": round(f1, 4)}
 
-        score = acc if scoring_metric == "accuracy" else f1
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {name} — Accuracy: {acc:.4f}, F1: {f1:.4f}\n")
+            score = acc if scoring_metric == "accuracy" else f1
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {name} — Accuracy: {acc:.4f}, F1: {f1:.4f}\n")
 
-        if score > best_score:
-            best_score = score
-            best_model_name = name
+            if score > best_score:
+                best_score = score
+                best_model_name = name
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ {name} failed: {e}\n")
+            results[name] = {"Accuracy": 0.0, "F1 (weighted)": 0.0}
 
         if progress_callback:
             progress_callback(idx + 1, len(models), name, status="end")
+
+    # Guard: no model succeeded
+    if not best_model_name:
+        raise RuntimeError(
+            "All classification models failed to train. "
+            "Please check your data for issues (e.g., NaN values, incompatible dtypes)."
+        )
 
     return results, best_model_name, best_score
 
@@ -252,7 +272,7 @@ def run_tuning_classification(
 
     X_tune, y_tune = _maybe_subsample(X_train, y_train, best_model_name)
 
-    param_grid = CLASSIFICATION_PARAM_GRIDS[best_model_name]
+    param_grid = CLASSIFICATION_PARAM_GRIDS.get(best_model_name, {})
     if not param_grid:
         # No hyperparameters to tune — just refit on full data
         model.fit(X_train, y_train)
@@ -262,9 +282,17 @@ def run_tuning_classification(
         report = classification_report(y_test, y_pred, output_dict=True)
         return acc, f1, {}, report, model
 
+    # Guard: cap cv_folds to the smallest class count to avoid StratifiedKFold crash
+    if hasattr(y_tune, 'value_counts'):
+        min_class_count = y_tune.value_counts().min()
+    else:
+        _, counts = np.unique(y_tune, return_counts=True)
+        min_class_count = counts.min() if len(counts) > 0 else 2
+    safe_cv = min(cv_folds, max(2, int(min_class_count)))
+
     search = RandomizedSearchCV(
         model, param_grid,
-        cv=cv_folds, n_iter=min(10, _grid_combinations(param_grid)),
+        cv=safe_cv, n_iter=min(10, _grid_combinations(param_grid)),
         random_state=42, n_jobs=1,
         scoring=_sklearn_scoring(scoring_metric),
         verbose=3,
@@ -297,41 +325,53 @@ def run_baseline_regression(
     Returns (results_dict, best_model_name, best_r2).
     results_dict maps model_name → {R², MAE, RMSE}.
     """
+    models = _build_regression_models()
     results = {}
     best_r2 = -float("inf")
     best_model_name = ""
 
-    for idx, (name, model) in enumerate(REGRESSION_MODELS.items()):
+    for idx, (name, model) in enumerate(models.items()):
         if progress_callback:
-            progress_callback(idx, len(REGRESSION_MODELS), name, status="start")
+            progress_callback(idx, len(models), name, status="start")
 
         print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚙️ Initializing {name}...")
 
-        X_tr, y_tr = _maybe_subsample(X_train, y_train, name)
-        if len(X_tr) < len(X_train):
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Subsampling to {len(X_tr):,} rows...")
+        try:
+            X_tr, y_tr = _maybe_subsample(X_train, y_train, name)
+            if len(X_tr) < len(X_train):
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 📊 Subsampling to {len(X_tr):,} rows...")
 
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 Fitting model...")
-        model.fit(X_tr, y_tr)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] 🚀 Fitting model...")
+            model.fit(X_tr, y_tr)
 
-        y_pred = model.predict(X_test)
-        r2 = r2_score(y_test, y_pred)
-        mae = mean_absolute_error(y_test, y_pred)
-        rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+            y_pred = model.predict(X_test)
+            r2 = r2_score(y_test, y_pred)
+            mae = mean_absolute_error(y_test, y_pred)
+            rmse = np.sqrt(mean_squared_error(y_test, y_pred))
 
-        results[name] = {
-            "R²": round(r2, 4),
-            "MAE": round(mae, 4),
-            "RMSE": round(rmse, 4),
-        }
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {name} — R²: {r2:.4f}, MAE: {mae:.4f}, RMSE: {rmse:.4f}\n")
+            results[name] = {
+                "R²": round(r2, 4),
+                "MAE": round(mae, 4),
+                "RMSE": round(rmse, 4),
+            }
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ {name} — R²: {r2:.4f}, MAE: {mae:.4f}, RMSE: {rmse:.4f}\n")
 
-        if r2 > best_r2:
-            best_r2 = r2
-            best_model_name = name
+            if r2 > best_r2:
+                best_r2 = r2
+                best_model_name = name
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] ❌ {name} failed: {e}\n")
+            results[name] = {"R²": 0.0, "MAE": 0.0, "RMSE": 0.0}
 
         if progress_callback:
-            progress_callback(idx + 1, len(REGRESSION_MODELS), name, status="end")
+            progress_callback(idx + 1, len(models), name, status="end")
+
+    # Guard: no model succeeded
+    if not best_model_name:
+        raise RuntimeError(
+            "All regression models failed to train. "
+            "Please check your data for issues (e.g., NaN values, incompatible dtypes)."
+        )
 
     return results, best_model_name, best_r2
 
@@ -345,11 +385,12 @@ def run_tuning_regression(
 
     Returns (final_r2, final_mae, final_rmse, best_params, final_model).
     """
-    model = REGRESSION_MODELS[best_model_name]
+    models = _build_regression_models()
+    model = models[best_model_name]
 
     X_tune, y_tune = _maybe_subsample(X_train, y_train, best_model_name)
 
-    param_grid = REGRESSION_PARAM_GRIDS[best_model_name]
+    param_grid = REGRESSION_PARAM_GRIDS.get(best_model_name, {})
     if not param_grid:
         model.fit(X_train, y_train)
         y_pred = model.predict(X_test)
@@ -358,9 +399,12 @@ def run_tuning_regression(
         rmse = np.sqrt(mean_squared_error(y_test, y_pred))
         return r2, mae, rmse, {}, model
 
+    # Guard: cap cv_folds to sample count to avoid KFold crash
+    safe_cv = min(cv_folds, max(2, len(X_tune)))
+
     search = RandomizedSearchCV(
         model, param_grid,
-        cv=cv_folds, n_iter=min(10, _grid_combinations(param_grid)),
+        cv=safe_cv, n_iter=min(10, _grid_combinations(param_grid)),
         random_state=42, n_jobs=1,
         scoring="r2",
         verbose=3,
