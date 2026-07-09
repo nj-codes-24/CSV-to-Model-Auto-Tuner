@@ -24,22 +24,25 @@ By abstracting away the boilerplate of data preparation and model selection, thi
 ## ✨ Features
 
 ### 🧪 1. Leakage-Free, Industry-Standard EDA
-The engine executes a rigorous 8-phase data preparation pipeline. All transformations are fitted **strictly on the training set** to prevent data leakage.
+The engine executes a rigorous data preparation pipeline. All transformations are mathematically persisted and fitted **strictly on the training set** to prevent data leakage.
+- **Smart Feature Engineering:** Intelligently shreds text columns, automatically extracting Date/Time metrics (Year, Month, Day, Is_Weekend) and splitting complex structural IDs (like `Cabin: F/34/P`) based on consistent delimiters.
 - **Smart Imputation:** Dynamically median-fills skewed numeric data, mean-fills normal distributions, and handles categorical nulls.
 - **Statistical Feature Selection:** Eliminates multicollinear features (>0.80 correlation) and utilizes ANOVA (Regression) or Chi-Square (Classification) F-tests to drop statistically insignificant columns.
 - **Outlier & Skewness Handling:** Caps outliers using IQR boundaries and applies `log1p` transformations to highly skewed target variables to stabilize variance.
 - **Hybrid Encoding:** Routes low-cardinality features (≤10 unique) to One-Hot Encoding and high-cardinality features to Target Encoding.
 
 ### 🌲 2. Random Forest Signal Extraction
-Before training, the engine runs a Random Forest Feature Importance Scan to rank features, stripping away noise and isolating only the top *N* strongest predictive signals.
+Before training, the engine runs a Random Forest Feature Importance Scan to rank features. It mathematically detects the "elbow" point of maximum curvature in the cumulative importance graph, slicing the features autonomously to maximize signal and drop noise.
 
-### 📊 3. Automated Benchmarking & Tuning
+### 📊 3. Automated Benchmarking & Ensembling
 The cleaned data is evaluated against a gauntlet of 8 state-of-the-art algorithms (including XGBoost, Gradient Boosting, Random Forest, AdaBoost, Ridge/Lasso, and SVM). 
 - **Smart Metrics:** The engine dynamically selects the right evaluation metric (e.g., automatically switching to F1-Weighted if it detects severe class imbalance).
-- **Hyperparameter Tuning:** The winning baseline model is passed through a `RandomizedSearchCV` to find optimal hyperparameters via Cross-Validation.
+- **Hyperparameter Tuning:** The top 3 winning baseline models are passed through a `RandomizedSearchCV` to find optimal hyperparameters via Cross-Validation.
+- **Voting Ensembles:** Combines the top 3 tuned models into a highly robust Voting Regressor/Classifier for maximum performance.
 
-### 💻 4. Premium "Glassmorphic" UI & Handoff
-- **Executive Log:** Watch the engine make decisions in real-time. The UI prints exactly *why* a column was dropped or *how* a value was imputed progressively as it runs.
+### 💻 4. Premium "Glassmorphic" UI & Kaggle Inference
+- **Executive Log:** Watch the engine make decisions in real-time. The UI prints exactly *why* a column was dropped or *how* a value was imputed.
+- **Kaggle Inference Support:** After training, immediately upload an unseen `test.csv` (like in Kaggle competitions). The engine will perfectly re-apply the exact Feature Engineering, Imputation, and Encoding logic to generate perfect predictions with ID columns preserved!
 - **Single-Click Deployment:** Instantly download the final tuned model as a serialized `.pkl` file (ready for production integration) alongside the fully cleaned and encoded dataset as a CSV.
 
 ---
@@ -82,7 +85,8 @@ The cleaned data is evaluated against a gauntlet of 8 state-of-the-art algorithm
 2. **Configure:** Select your **Target Variable** from the dropdown. *(Optional: Open "Advanced Parameters" to adjust the train/test split, CV folds, or explicitly define data leakage columns to ignore).*
 3. **Launch:** Click **⚡ Launch Engine**.
 4. **Monitor:** Watch the progressively rendering **Executive Log** as the engine cleans your data, followed by the background model training logs.
-5. **Deploy:** Review the final benchmarks and download your clean dataset and trained `.pkl` model directly from the UI.
+5. **Kaggle Inference:** Upload an unseen test dataset (like `test.csv` from Kaggle), select your ID column, and instantly generate an automated prediction file!
+6. **Deploy:** Review the final benchmarks and download your clean dataset, test predictions, and trained `.pkl` model directly from the UI.
 
 ---
 
