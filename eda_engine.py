@@ -596,15 +596,14 @@ def safe_scale(
 
 def rf_importance_scan(
     X_train: pd.DataFrame, X_test: pd.DataFrame,
-    y_train: pd.Series, task_type: str, top_n: int = 10
+    y_train: pd.Series, task_type: str, top_n: int = None
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
-    Train a quick Random Forest, extract feature importances, and reduce to
-    the top-N most important features.
-
+    Train a quick Random Forest, extract feature importances, and mathematically 
+    detect the 'elbow' point to keep only the most predictive features.
+    
     Returns (X_train_reduced, X_test_reduced, importance_df).
     """
-    # Guard: empty feature set — nothing to scan
     if X_train.shape[1] == 0:
         empty_imp = pd.DataFrame({"Feature": [], "Importance": []})
         return X_train, X_test, empty_imp
@@ -625,9 +624,37 @@ def rf_importance_scan(
         .reset_index(drop=True)
     )
 
-    # Cap top_n to the number of available features
-    top_n = min(top_n, len(importance_df))
-    top_features = importance_df["Feature"].head(top_n).tolist()
+    n_features = len(importance_df)
+    
+    if n_features > 2:
+        y = importance_df["Importance"].values
+        y_min, y_max = y.min(), y.max()
+        
+        if y_max > y_min:
+            # Normalize axes for accurate geometric distance calculation
+            y_norm = (y - y_min) / (y_max - y_min)
+            x_norm = np.linspace(0, 1, n_features)
+            
+            # Distance maximized when x+y is minimized (curvature point)
+            elbow_index = np.argmin(x_norm + y_norm)
+            elbow_n = max(1, elbow_index + 1)
+            
+            # Cumulative threshold fallback (min 95% information retained)
+            cum_y = np.cumsum(y) / np.sum(y)
+            cum_n = np.searchsorted(cum_y, 0.95) + 1
+            
+            # Take the safest upper bound to preserve predictive power
+            auto_top_n = max(elbow_n, cum_n)
+        else:
+            auto_top_n = n_features
+    else:
+        auto_top_n = n_features
+
+    # Fallback if user explicitly passed a top_n anyway
+    if top_n is not None:
+        auto_top_n = min(top_n, n_features)
+        
+    top_features = importance_df["Feature"].head(auto_top_n).tolist()
 
     return X_train[top_features], X_test[top_features], importance_df
 

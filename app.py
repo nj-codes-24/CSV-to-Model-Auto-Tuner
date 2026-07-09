@@ -190,7 +190,6 @@ if st.session_state.app_phase == "setup":
                     test_size = st.slider("Test split ratio", 0.10, 0.40, 0.20, 0.05)
                     cv_folds  = st.slider("CV folds", 2, 10, 5, 1)
                 with p2:
-                    top_n = st.slider("Top N features", 5, 30, 10, 1)
                     leakage_cols = st.multiselect(
                         "Leakage columns",
                         [c for c in df.columns if c != target_var],
@@ -203,7 +202,6 @@ if st.session_state.app_phase == "setup":
                 st.session_state.app_target   = target_var
                 st.session_state.app_tsize    = test_size
                 st.session_state.app_cv       = cv_folds
-                st.session_state.app_topn     = top_n
                 st.session_state.app_leakage  = leakage_cols if leakage_cols else None
                 if "app_done" in st.session_state:
                     del st.session_state["app_done"] # Force re-run if launched again
@@ -217,7 +215,7 @@ if st.session_state.app_phase == "setup":
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # Guard: required session state keys must exist for Phase 2
-_required_keys = ["app_df", "app_target", "app_tsize", "app_cv", "app_topn", "app_leakage"]
+_required_keys = ["app_df", "app_target", "app_tsize", "app_cv", "app_leakage"]
 if not all(k in st.session_state for k in _required_keys):
     st.session_state.app_phase = "setup"
     st.rerun()
@@ -238,7 +236,6 @@ df         = st.session_state.app_df
 target_var = st.session_state.app_target
 test_size  = st.session_state.app_tsize
 cv_folds   = st.session_state.app_cv
-top_n      = st.session_state.app_topn
 leakage_cols = st.session_state.app_leakage
 
 # Drop rows where target is NaN before any processing
@@ -339,7 +336,7 @@ if "app_done" not in st.session_state:
     sublog(f"Scaled {sc['scaled_cols']} columns")
     
     # 9. RF Importance
-    X_train, X_test, importance_df = rf_importance_scan(X_train, X_test, y_train, task_type, top_n=top_n)
+    X_train, X_test, importance_df = rf_importance_scan(X_train, X_test, y_train, task_type)
     top_features = X_train.columns.tolist()
     log(f"**RF Importance Scan** — Selected top {len(top_features)} features: `{', '.join(top_features)}`")
 
