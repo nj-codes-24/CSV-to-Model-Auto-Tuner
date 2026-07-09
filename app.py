@@ -746,53 +746,57 @@ if "app_done" in st.session_state:
             st.info("Model download unavailable — tuning failed. Re-run with different parameters.")
 
     st.markdown("---")
-    st.write("**If you have test data which you want to make predictions on, upload it below:**")
     
-    def on_test_upload():
-        st.session_state.app_preds_run = False
+    if "app_pred_df" in st.session_state:
+        st.header("Your Predictions")
+        pred_df = st.session_state.app_pred_df
         
-    test_file = st.file_uploader("Upload test.csv", type=["csv"], key="kaggle_test", label_visibility="collapsed", on_change=on_test_upload)
-    
-    if test_file is not None:
-        try:
-            test_raw = pd.read_csv(test_file)
-            
-            id_cols = st.multiselect(
-                "Select ID columns to include in your output (e.g. PassengerId)",
-                options=test_raw.columns.tolist(),
-                default=[c for c in test_raw.columns if "id" in c.lower()],
-                on_change=on_test_upload
+        st.markdown("<br>", unsafe_allow_html=True)
+        prev_col1, prev_col2 = st.columns([1, 1])
+        with prev_col1:
+            st.write("**Prediction Preview:**")
+            st.dataframe(pred_df.head(10), use_container_width=True, hide_index=True)
+        with prev_col2:
+            st.markdown("<div style='height: 50px;'></div>", unsafe_allow_html=True)
+            pred_buf = io.BytesIO()
+            pred_df.to_csv(pred_buf, index=False)
+            st.download_button(
+                "⬇️  Download Predictions (CSV)",
+                data=pred_buf.getvalue(),
+                file_name="predictions.csv",
+                mime="text/csv",
+                use_container_width=True,
+                type="primary"
             )
-            
-            if st.button("Run Prediction", type="primary"):
-                st.session_state.app_preds_run = True
+            st.write("")
+            if st.button("Upload different test data"):
+                del st.session_state["app_pred_df"]
+                st.rerun()
+    else:
+        st.write("**If you have test data which you want to make predictions on, upload it below:**")
+        test_file = st.file_uploader("Upload test.csv", type=["csv"], key="kaggle_test", label_visibility="collapsed")
+        
+        if test_file is not None:
+            try:
+                test_raw = pd.read_csv(test_file)
                 
-            if st.session_state.get("app_preds_run", False):
-                test_transformed = apply_eda_pipeline(test_raw, st.session_state.app_eda_state)
-                preds = st.session_state.app_final_model.predict(test_transformed)
-                if st.session_state.app_target_log:
-                    preds = np.expm1(preds)
-                    
-                pred_df = pd.DataFrame({st.session_state.app_target: preds})
-                if id_cols:
-                    pred_df = pd.concat([test_raw[id_cols], pred_df], axis=1)
+                id_cols = st.multiselect(
+                    "Select ID columns to include in your output (e.g. PassengerId)",
+                    options=test_raw.columns.tolist(),
+                    default=[c for c in test_raw.columns if "id" in c.lower()]
+                )
                 
-                st.markdown("<br>", unsafe_allow_html=True)
-                prev_col1, prev_col2 = st.columns([1, 1])
-                with prev_col1:
-                    st.write("**Prediction Preview:**")
-                    st.dataframe(pred_df.head(10), use_container_width=True)
-                with prev_col2:
-                    st.markdown("<div style='height: 50px;'></div>", unsafe_allow_html=True)
-                    pred_buf = io.BytesIO()
-                    pred_df.to_csv(pred_buf, index=False)
-                    st.download_button(
-                        "⬇️  Download Predictions (CSV)",
-                        data=pred_buf.getvalue(),
-                        file_name="predictions.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                        type="primary"
-                    )
-        except Exception as e:
-            st.error(f"Error generating predictions: {e}")
+                if st.button("Run Prediction", type="primary"):
+                    test_transformed = apply_eda_pipeline(test_raw, st.session_state.app_eda_state)
+                    preds = st.session_state.app_final_model.predict(test_transformed)
+                    if st.session_state.app_target_log:
+                        preds = np.expm1(preds)
+                        
+                    pred_df = pd.DataFrame({st.session_state.app_target: preds})
+                    if id_cols:
+                        pred_df = pd.concat([test_raw[id_cols], pred_df], axis=1)
+                        
+                    st.session_state.app_pred_df = pred_df
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Error generating predictions: {e}")
