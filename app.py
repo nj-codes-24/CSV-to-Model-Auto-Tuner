@@ -711,52 +711,63 @@ if "app_done" in st.session_state:
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    with st.container(border=True):
-        dl1, dl2 = st.columns(2)
-        with dl1:
-            X_all = pd.concat([st.session_state.app_X_train, st.session_state.app_X_test], axis=0)
-            y_all = pd.concat([st.session_state.app_y_train, st.session_state.app_y_test], axis=0)
-            cleaned = X_all.copy()
-            cleaned[st.session_state.app_target] = y_all
-            csv_buf = io.BytesIO()
-            cleaned.to_csv(csv_buf, index=False)
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        X_all = pd.concat([st.session_state.app_X_train, st.session_state.app_X_test], axis=0)
+        y_all = pd.concat([st.session_state.app_y_train, st.session_state.app_y_test], axis=0)
+        cleaned = X_all.copy()
+        cleaned[st.session_state.app_target] = y_all
+        csv_buf = io.BytesIO()
+        cleaned.to_csv(csv_buf, index=False)
+        st.download_button(
+            "⬇️  Download Cleaned Dataset (CSV)",
+            data=csv_buf.getvalue(),
+            file_name="cleaned_dataset.csv",
+            mime="text/csv",
+            use_container_width=True,
+            type="primary"
+        )
+        st.caption(f"{cleaned.shape[0]:,} rows × {cleaned.shape[1]} cols")
+
+    with dl2:
+        if st.session_state.app_final_model is not None:
+            mdl_buf = io.BytesIO()
+            joblib.dump(st.session_state.app_final_model, mdl_buf)
             st.download_button(
-                "⬇️  Download Cleaned Dataset (CSV)",
-                data=csv_buf.getvalue(),
-                file_name="cleaned_dataset.csv",
-                mime="text/csv",
+                "⬇️  Download Trained Model (.pkl)",
+                data=mdl_buf.getvalue(),
+                file_name=f"tuned_{best_overall.replace(' ', '_').lower()}.pkl",
+                mime="application/octet-stream",
                 use_container_width=True,
+                type="primary"
             )
-            st.caption(f"{cleaned.shape[0]:,} rows × {cleaned.shape[1]} cols")
+            st.caption(f"Model: {best_overall}")
+        else:
+            st.info("Model download unavailable — tuning failed. Re-run with different parameters.")
 
-        with dl2:
-            if st.session_state.app_final_model is not None:
-                mdl_buf = io.BytesIO()
-                joblib.dump(st.session_state.app_final_model, mdl_buf)
-                st.download_button(
-                    "⬇️  Download Trained Model (.pkl)",
-                    data=mdl_buf.getvalue(),
-                    file_name=f"tuned_{best_overall.replace(' ', '_').lower()}.pkl",
-                    mime="application/octet-stream",
-                    use_container_width=True,
-                )
-                st.caption(f"Model: {best_overall}")
-            else:
-                st.info("Model download unavailable — tuning failed. Re-run with different parameters.")
-
-        st.markdown("---")
-        st.write("**If you have test data which you want to make predictions on, upload it below:**")
-        test_file = st.file_uploader("Upload test.csv", type=["csv"], key="kaggle_test", label_visibility="collapsed")
-        if test_file is not None:
-            try:
-                test_raw = pd.read_csv(test_file)
+    st.markdown("---")
+    st.write("**If you have test data which you want to make predictions on, upload it below:**")
+    
+    def on_test_upload():
+        st.session_state.app_preds_run = False
+        
+    test_file = st.file_uploader("Upload test.csv", type=["csv"], key="kaggle_test", label_visibility="collapsed", on_change=on_test_upload)
+    
+    if test_file is not None:
+        try:
+            test_raw = pd.read_csv(test_file)
+            
+            id_cols = st.multiselect(
+                "Select ID columns to include in your output (e.g. PassengerId)",
+                options=test_raw.columns.tolist(),
+                default=[c for c in test_raw.columns if "id" in c.lower()],
+                on_change=on_test_upload
+            )
+            
+            if st.button("Run Prediction", type="primary"):
+                st.session_state.app_preds_run = True
                 
-                id_cols = st.multiselect(
-                    "Select ID columns to include in your output (e.g. PassengerId)",
-                    options=test_raw.columns.tolist(),
-                    default=[c for c in test_raw.columns if "id" in c.lower()]
-                )
-                    
+            if st.session_state.get("app_preds_run", False):
                 test_transformed = apply_eda_pipeline(test_raw, st.session_state.app_eda_state)
                 preds = st.session_state.app_final_model.predict(test_transformed)
                 if st.session_state.app_target_log:
@@ -765,18 +776,23 @@ if "app_done" in st.session_state:
                 pred_df = pd.DataFrame({st.session_state.app_target: preds})
                 if id_cols:
                     pred_df = pd.concat([test_raw[id_cols], pred_df], axis=1)
-                    
-                pred_buf = io.BytesIO()
-                pred_df.to_csv(pred_buf, index=False)
                 
-                st.success("Predictions generated successfully!")
-                st.download_button(
-                    "⬇️  Download Predictions (CSV)",
-                    data=pred_buf.getvalue(),
-                    file_name="predictions.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                    type="primary"
-                )
-            except Exception as e:
-                st.error(f"Error generating predictions: {e}")
+                st.markdown("<br>", unsafe_allow_html=True)
+                prev_col1, prev_col2 = st.columns([1, 1])
+                with prev_col1:
+                    st.write("**Prediction Preview:**")
+                    st.dataframe(pred_df.head(10), use_container_width=True)
+                with prev_col2:
+                    st.markdown("<div style='height: 50px;'></div>", unsafe_allow_html=True)
+                    pred_buf = io.BytesIO()
+                    pred_df.to_csv(pred_buf, index=False)
+                    st.download_button(
+                        "⬇️  Download Predictions (CSV)",
+                        data=pred_buf.getvalue(),
+                        file_name="predictions.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                        type="primary"
+                    )
+        except Exception as e:
+            st.error(f"Error generating predictions: {e}")
