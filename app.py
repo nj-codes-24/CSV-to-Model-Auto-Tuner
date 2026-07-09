@@ -462,7 +462,7 @@ if "app_done" not in st.session_state:
                     print(f"⚠️ Tuning failed for {m_name}: {e}. Falling back to baseline.")
                     
         # Decide whether tuning helped this specific model
-        improved_flag = t_score > b_score and t_model is not None
+        improved_flag = round(t_score, 4) > round(b_score, 4) and t_model is not None
         
         tuning_reports[m_name] = {
             "baseline_score": b_score,
@@ -667,7 +667,7 @@ if "app_done" in st.session_state:
     elif best_overall in tuning_reports and tuning_reports[best_overall]["improved"]:
         detail = f"Tuning provided the best result! Achieved **{final_score:.4f}** {metric_name}."
     else:
-        detail = f"The baseline {best_overall} could not be beaten! Achieved **{final_score:.4f}** {metric_name}."
+        detail = f"Neither tuning nor ensembling could beat the baseline **{best_overall}**! Achieved **{final_score:.4f}** {metric_name}."
 
     st.markdown(f"""
     <div class="vb">
@@ -709,10 +709,10 @@ if "app_done" in st.session_state:
             st.download_button(
                 "⬇️  Download Trained Model (.pkl)",
                 data=mdl_buf.getvalue(),
-                file_name=f"tuned_{best_model.replace(' ', '_').lower()}.pkl",
+                file_name=f"tuned_{best_overall.replace(' ', '_').lower()}.pkl",
                 mime="application/octet-stream",
                 use_container_width=True,
             )
-            st.caption(f"Model: {best_model}")
+            st.caption(f"Model: {best_overall}")
         else:
             st.info("Model download unavailable — tuning failed. Re-run with different parameters.")
