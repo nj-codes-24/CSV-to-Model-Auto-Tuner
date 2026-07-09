@@ -711,38 +711,6 @@ if "app_done" in st.session_state:
 
     st.markdown("<br>", unsafe_allow_html=True)
     
-    dl1, dl2 = st.columns(2)
-    with dl1:
-        X_all = pd.concat([st.session_state.app_X_train, st.session_state.app_X_test], axis=0)
-        y_all = pd.concat([st.session_state.app_y_train, st.session_state.app_y_test], axis=0)
-        cleaned = X_all.copy()
-        cleaned[st.session_state.app_target] = y_all
-        csv_buf = io.BytesIO()
-        cleaned.to_csv(csv_buf, index=False)
-        st.download_button(
-            "⬇️  Download Cleaned Dataset (CSV)",
-            data=csv_buf.getvalue(),
-            file_name="cleaned_dataset.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-        st.caption(f"{cleaned.shape[0]:,} rows × {cleaned.shape[1]} cols")
-
-    with dl2:
-        if st.session_state.app_final_model is not None:
-            mdl_buf = io.BytesIO()
-            joblib.dump(st.session_state.app_final_model, mdl_buf)
-            st.download_button(
-                "⬇️  Download Trained Model (.pkl)",
-                data=mdl_buf.getvalue(),
-                file_name=f"tuned_{best_overall.replace(' ', '_').lower()}.pkl",
-                mime="application/octet-stream",
-                use_container_width=True,
-            )
-            st.caption(f"Model: {best_overall}")
-        else:
-            st.info("Model download unavailable — tuning failed. Re-run with different parameters.")
-
     st.markdown("---")
     st.subheader("🚀 Kaggle Inference")
     st.write("Upload an unseen test dataset (without the target column) to generate predictions.")
@@ -778,3 +746,37 @@ if "app_done" in st.session_state:
             )
         except Exception as e:
             st.error(f"Error generating predictions: {e}")
+
+    st.markdown("---")
+    
+    dl1, dl2 = st.columns(2)
+    with dl1:
+        X_all = pd.concat([st.session_state.app_X_train, st.session_state.app_X_test], axis=0)
+        y_all = pd.concat([st.session_state.app_y_train, st.session_state.app_y_test], axis=0)
+        cleaned = X_all.copy()
+        cleaned[st.session_state.app_target] = y_all
+        csv_buf = io.BytesIO()
+        cleaned.to_csv(csv_buf, index=False)
+        st.download_button(
+            "⬇️  Download Cleaned Dataset (CSV)",
+            data=csv_buf.getvalue(),
+            file_name="cleaned_dataset.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
+        st.caption(f"{cleaned.shape[0]:,} rows × {cleaned.shape[1]} cols")
+
+    with dl2:
+        if st.session_state.app_final_model is not None:
+            mdl_buf = io.BytesIO()
+            joblib.dump(st.session_state.app_final_model, mdl_buf)
+            st.download_button(
+                "⬇️  Download Trained Model (.pkl)",
+                data=mdl_buf.getvalue(),
+                file_name=f"tuned_{best_overall.replace(' ', '_').lower()}.pkl",
+                mime="application/octet-stream",
+                use_container_width=True,
+            )
+            st.caption(f"Model: {best_overall}")
+        else:
+            st.info("Model download unavailable — tuning failed. Re-run with different parameters.")
