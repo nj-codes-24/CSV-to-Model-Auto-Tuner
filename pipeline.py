@@ -205,7 +205,7 @@ def run_baseline_classification(
     """
     Train all classification models and return results ranked by the chosen metric.
 
-    Returns (results_dict, best_model_name, best_score, best_fitted_model).
+    Returns (results_dict, best_model_name, best_score, best_fitted_model, all_fitted_models).
     results_dict maps model_name → {accuracy, f1_weighted}.
     """
     models = _build_classification_models(use_class_weight)
@@ -259,7 +259,7 @@ def run_baseline_classification(
     if best_model_name in _SLOW_MODELS and len(X_train) > _SAMPLE_THRESHOLD:
         best_fitted_model.fit(X_train, y_train)
 
-    return results, best_model_name, best_score, best_fitted_model
+    return results, best_model_name, best_score, best_fitted_model, models
 
 
 def run_tuning_classification(
@@ -328,7 +328,7 @@ def run_baseline_regression(
     """
     Train all regression models and return results ranked by R².
 
-    Returns (results_dict, best_model_name, best_r2, best_fitted_model).
+    Returns (results_dict, best_model_name, best_r2, best_fitted_model, all_fitted_models).
     results_dict maps model_name → {R², MAE, RMSE}.
     """
     models = _build_regression_models()
@@ -385,7 +385,7 @@ def run_baseline_regression(
     if best_model_name in _SLOW_MODELS and len(X_train) > _SAMPLE_THRESHOLD:
         best_fitted_model.fit(X_train, y_train)
 
-    return results, best_model_name, best_r2, best_fitted_model
+    return results, best_model_name, best_r2, best_fitted_model, models
 
 
 def run_tuning_regression(
