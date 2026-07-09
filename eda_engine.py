@@ -332,10 +332,10 @@ def smart_impute(X_train: pd.DataFrame, X_test: pd.DataFrame) -> tuple[pd.DataFr
         "mean_values": {}
     }
 
-    # Categorical
-    for col in X_train.select_dtypes(["object", "category"]).columns:
-        X_train[col] = X_train[col].fillna("None")
-        X_test[col] = X_test[col].fillna("None")
+    # Categorical (including bool which might have become mixed with NaNs)
+    for col in X_train.select_dtypes(["object", "category", "bool"]).columns:
+        X_train[col] = X_train[col].fillna("None").astype(str)
+        X_test[col] = X_test[col].fillna("None").astype(str)
         if col not in report["categorical_imputed"]:
             report["categorical_imputed"].append(col)
 
@@ -937,8 +937,8 @@ def apply_eda_pipeline(test_df: pd.DataFrame, state: dict) -> pd.DataFrame:
         df = df.drop(columns=[c for c in eng_state.get("dropped_cols", []) if c in df.columns], errors="ignore")
     
     # 2. Imputation
-    for col in df.select_dtypes(["object", "category"]).columns:
-        df[col] = df[col].fillna("None")
+    for col in df.select_dtypes(["object", "category", "bool"]).columns:
+        df[col] = df[col].fillna("None").astype(str)
     for col, val in state["impute_medians"].items():
         if col in df.columns:
             df[col] = df[col].fillna(val)
