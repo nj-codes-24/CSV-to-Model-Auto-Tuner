@@ -195,6 +195,15 @@ if st.session_state.app_phase == "setup":
                         "Leakage columns",
                         [c for c in df.columns if c != target_var],
                     )
+
+            st.markdown("")
+            if st.button("⚡  Launch Engine", use_container_width=True, type="primary"):
+                st.session_state.app_phase    = "results"
+                st.session_state.app_df       = df.copy()
+                st.session_state.app_target   = target_var
+                st.session_state.app_tsize    = test_size
+                st.session_state.app_cv       = cv_folds
+                st.session_state.app_topn     = top_n
                 st.session_state.app_leakage  = leakage_cols if leakage_cols else None
                 if "app_done" in st.session_state:
                     del st.session_state["app_done"] # Force re-run if launched again
