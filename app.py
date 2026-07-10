@@ -185,16 +185,28 @@ if st.session_state.app_phase == "setup":
             if target_missing_pct > 0.5:
                 st.warning(f"⚠️ Target column `{target_var}` is {target_missing_pct:.0%} missing. Results may be unreliable.")
 
+            st.divider()
+
+            id_cols = st.multiselect(
+                "What detail can never changes that we can use to perfectly identify each item? (Helps remove duplicates)",
+                [c for c in df.columns if c != target_var],
+            )
+            
+            st.divider()
+            
+            leakage_cols = st.multiselect(
+                "Think about the exact moment you need this model to make a real-world prediction. Which of these pieces of data will not actually exist yet? (Prevents data leakage)",
+                [c for c in df.columns if c != target_var and c not in id_cols],
+            )
+
+            st.divider()
+
             with st.expander("⚙️  Advanced Parameters"):
                 p1, p2 = st.columns(2)
                 with p1:
                     test_size = st.slider("Test split ratio", 0.10, 0.40, 0.20, 0.05)
-                    cv_folds  = st.slider("CV folds", 2, 10, 5, 1)
                 with p2:
-                    leakage_cols = st.multiselect(
-                        "Leakage columns",
-                        [c for c in df.columns if c != target_var],
-                    )
+                    cv_folds  = st.slider("CV folds", 2, 10, 5, 1)
 
             st.markdown("")
             if st.button("⚡  Launch Engine", use_container_width=True, type="primary"):
@@ -204,6 +216,7 @@ if st.session_state.app_phase == "setup":
                 st.session_state.app_tsize    = test_size
                 st.session_state.app_cv       = cv_folds
                 st.session_state.app_leakage  = leakage_cols if leakage_cols else None
+                st.session_state.app_id_cols  = id_cols if id_cols else None
                 if "app_done" in st.session_state:
                     del st.session_state["app_done"] # Force re-run if launched again
                 st.rerun()
@@ -238,6 +251,7 @@ target_var = st.session_state.app_target
 test_size  = st.session_state.app_tsize
 cv_folds   = st.session_state.app_cv
 leakage_cols = st.session_state.app_leakage
+id_cols = st.session_state.app_id_cols
 
 # Drop rows where target is NaN before any processing
 df = df.dropna(subset=[target_var])
@@ -268,7 +282,7 @@ if "app_done" not in st.session_state:
     
     # 1. Cleaning
     try:
-        df_clean, trim = basic_trim(df, target_var, leakage_cols)
+        df_clean, trim = basic_trim(df, target_var, leakage_cols=leakage_cols, user_id_cols=id_cols)
     except ValueError as e:
         st.error(f"❌ Data cleaning failed: {e}")
         st.stop()
@@ -284,6 +298,17 @@ if "app_done" not in st.session_state:
     task_type  = detect_task_type(y_raw)
     metric_info = recommend_metric(y_raw, task_type)
     log(f"**Task Detection**: {task_type.title()} | Primary metric: {metric_info['metric_display_name']}")
+    
+    # 2.5 Big Data Sampling
+    MAX_ROWS = 100000
+    if len(df_clean) > MAX_ROWS:
+        log(f"🧠 Smart Sampling activated: Downsampling {len(df_clean):,} rows to {MAX_ROWS}.")
+        st.info(f"🧠 **Smart Sampling Activated:** Downsampling dataset from **{len(df_clean):,}** to **{MAX_ROWS}** rows for optimal performance. (Classification uses stratified sampling to maintain class balance).")
+        with st.spinner("Downsampling dataset..."):
+            if task_type == "classification":
+                df_clean = df_clean.groupby(target_var, group_keys=False).apply(lambda x: x.sample(int(np.rint(MAX_ROWS * len(x) / len(df_clean))), random_state=42)).reset_index(drop=True)
+            else:
+                df_clean = df_clean.sample(n=MAX_ROWS, random_state=42).reset_index(drop=True)
     
     # 3. Split
     X = df_clean.drop(columns=[target_var])
@@ -410,6 +435,15 @@ if "app_done" not in st.session_state:
         )
     with col_cht:
         st.bar_chart(data=res_df, x="Algorithm", y=sort_col)
+
+    # ── Circuit Breakers ──
+    if best_score <= 0.05:
+        st.info(f"🛑 **Training Halted: No Learnable Signal**\n\nWe ran baseline checks but our automated pipeline couldn't find a learnable signal in this data. ({sort_col} = {best_score:.4f})\n\n**Action required:** Please upload a new dataset with stronger feature relationships to continue.")
+        st.stop()
+        
+    if best_score >= 0.9999:
+        st.warning(f"🛑 **Training Halted: Potential Data Leakage**\n\nBaseline testing reached a {sort_col} score of {best_score:.4f}, indicating severe overfitting or leakage. Tuning has been skipped.\n\n**Action required:** Please verify that your feature columns do not contain the target variable or post-event data.")
+        st.stop()
 
     # ── Stage 3: Tuning ──
     st.header("Stage 3: Hyperparameter Tuning (Top 3)")

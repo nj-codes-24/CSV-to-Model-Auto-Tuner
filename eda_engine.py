@@ -25,6 +25,10 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import OneHotEncoder, TargetEncoder
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
 from datetime import datetime
+try:
+    from imblearn.over_sampling import SMOTE
+except ImportError:
+    SMOTE = None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -125,7 +129,8 @@ def recommend_metric(y: pd.Series, task_type: str) -> dict:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def basic_trim(df: pd.DataFrame, target_col: str,
-               leakage_cols: list[str] | None = None) -> tuple[pd.DataFrame, dict]:
+               leakage_cols: list[str] | None = None,
+               user_id_cols: list[str] | None = None) -> tuple[pd.DataFrame, dict]:
     """
     Safe pre-split cleaning (no stats calculated, so no leakage risk):
       1. Drop exact-duplicate rows
@@ -146,7 +151,16 @@ def basic_trim(df: pd.DataFrame, target_col: str,
 
     # 1. Drop exact duplicates
     before = len(df)
-    df = df.drop_duplicates()
+    if user_id_cols:
+        # User specified columns that uniquely identify a row.
+        # Drop duplicates based on these columns instead of the whole row.
+        valid_id_cols = [c for c in user_id_cols if c in df.columns]
+        if valid_id_cols:
+            df = df.drop_duplicates(subset=valid_id_cols)
+        else:
+            df = df.drop_duplicates()
+    else:
+        df = df.drop_duplicates()
     report["duplicates_removed"] = before - len(df)
 
     # Guard: zero rows after dedup (e.g. single-row CSV)
@@ -177,8 +191,12 @@ def basic_trim(df: pd.DataFrame, target_col: str,
 
     # 3.5 Drop ID-like columns (high cardinality identifiers)
     id_cols = []
+    
+    if user_id_cols:
+        id_cols.extend([c for c in user_id_cols if c in df.columns and c != target_col])
+        
     for c in df.columns:
-        if c == target_col:
+        if c == target_col or c in id_cols:
             continue
         n_unique = df[c].nunique()
         total_rows = len(df)
@@ -681,6 +699,35 @@ def safe_scale(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 7.5: DATA BALANCING (SMOTE)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def apply_smote(
+    X_train: pd.DataFrame, y_train: pd.Series, task_type: str, metric_info: dict
+) -> tuple[pd.DataFrame, pd.Series, dict]:
+    """
+    Apply SMOTE to X_train and y_train if severe imbalance is detected in classification.
+    """
+    report: dict = {"smote_applied": False, "synthetic_samples_added": 0}
+
+    if task_type == "classification" and metric_info.get("imbalance_ratio", 1) > 10 and SMOTE is not None:
+        try:
+            smote = SMOTE(random_state=42)
+            n_before = len(X_train)
+            X_train_resampled, y_train_resampled = smote.fit_resample(X_train, y_train)
+            n_after = len(X_train_resampled)
+            if n_after > n_before:
+                X_train = pd.DataFrame(X_train_resampled, columns=X_train.columns)
+                y_train = pd.Series(y_train_resampled, name=y_train.name)
+                report["smote_applied"] = True
+                report["synthetic_samples_added"] = n_after - n_before
+        except Exception:
+            pass  # Fallback to no SMOTE if it fails (e.g. not enough samples in minority class)
+
+    return X_train, y_train, report
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # PHASE 8: RF IMPORTANCE SCAN
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -855,6 +902,12 @@ def run_full_eda(
     X_train, X_test, scale_report = safe_scale(X_train, X_test)
     results["scale_report"] = scale_report
     _progress(8, "Scaling", "end")
+
+    # ── Phase 7.5: Data Balancing (SMOTE) ────────────────────────────────────
+    _progress(8.5, "Data Balancing")
+    X_train, y_train, smote_report = apply_smote(X_train, y_train, task_type, metric_info)
+    results["smote_report"] = smote_report
+    _progress(8.5, "Data Balancing", "end")
 
     # ── Phase 8: RF Importance Scan ──────────────────────────────────────────
     _progress(9, "Feature Importance Scan")

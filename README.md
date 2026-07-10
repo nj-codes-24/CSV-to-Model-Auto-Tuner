@@ -30,6 +30,7 @@ The engine executes a rigorous data preparation pipeline. All transformations ar
 - **Statistical Feature Selection:** Eliminates multicollinear features (>0.80 correlation) and utilizes ANOVA (Regression) or Chi-Square (Classification) F-tests to drop statistically insignificant columns.
 - **Outlier & Skewness Handling:** Caps outliers using IQR boundaries and applies `log1p` transformations to highly skewed target variables to stabilize variance.
 - **Hybrid Encoding:** Routes low-cardinality features (≤10 unique) to One-Hot Encoding and high-cardinality features to Target Encoding.
+- **Automated Data Balancing (SMOTE):** Synthetically oversamples the minority class automatically when severe target imbalance (> 10x ratio) is detected, ensuring algorithms can learn rare events.
 
 ### 🌲 2. Random Forest Signal Extraction
 Before training, the engine runs a Random Forest Feature Importance Scan to rank features. It mathematically detects the "elbow" point of maximum curvature in the cumulative importance graph, slicing the features autonomously to maximize signal and drop noise.
@@ -40,7 +41,10 @@ The cleaned data is evaluated against a gauntlet of 8 state-of-the-art algorithm
 - **Hyperparameter Tuning:** The top 3 winning baseline models are passed through a `RandomizedSearchCV` to find optimal hyperparameters via Cross-Validation.
 - **Voting Ensembles:** Combines the top 3 tuned models into a highly robust Voting Regressor/Classifier for maximum performance.
 
-### 💻 4. Premium "Glassmorphic" UI & Kaggle Inference
+### 💻 4. Resilient & Premium "Glassmorphic" UI
+- **Context-Aware Setup:** Guides users through dataset setup by asking simple, plain-English context questions (e.g., identifying ID-like columns for exact deduplication and flagging potential data leakage variables).
+- **Big Data Sampler:** Automatically guards against memory crashes by deploying stratified downsampling on datasets larger than 100,000 rows, preserving exact class distributions for scalable learning.
+- **Smart Circuit Breakers:** Evaluates baseline algorithmic performance and aborts the pipeline early (skipping tuning) if a dataset lacks any learnable signal or if it achieves perfect accuracy (signaling severe data leakage/overfitting).
 - **Executive Log:** Watch the engine make decisions in real-time. The UI prints exactly *why* a column was dropped or *how* a value was imputed.
 - **Kaggle Inference Support:** After training, immediately upload an unseen `test.csv` (like in Kaggle competitions). The engine will perfectly re-apply the exact Feature Engineering, Imputation, and Encoding logic to generate perfect predictions with ID columns preserved!
 - **Single-Click Deployment:** Instantly download the final tuned model as a serialized `.pkl` file (ready for production integration) alongside the fully cleaned and encoded dataset as a CSV.
@@ -82,7 +86,7 @@ The cleaned data is evaluated against a gauntlet of 8 state-of-the-art algorithm
 ## 🎯 Usage Guide
 
 1. **Upload:** Open the local Streamlit URL (`http://localhost:8501`) and drop any raw CSV dataset into the upload zone.
-2. **Configure:** Select your **Target Variable** from the dropdown. *(Optional: Open "Advanced Parameters" to adjust the train/test split, CV folds, or explicitly define data leakage columns to ignore).*
+2. **Configure:** Select your **Target Variable** from the dropdown. Then, answer the natural language **Context Questions** to help the engine deduplicate exactly (using ID columns) and prevent data leakage. *(Optional: Open "Advanced Parameters" to adjust the train/test split or CV folds).*
 3. **Launch:** Click **⚡ Launch Engine**.
 4. **Monitor:** Watch the progressively rendering **Executive Log** as the engine cleans your data, followed by the background model training logs.
 5. **Kaggle Inference:** Upload an unseen test dataset (like `test.csv` from Kaggle), select your ID column, and instantly generate an automated prediction file!
